@@ -3,12 +3,29 @@ XDM Views Query Engine
 Executes federated queries across relational (SQL) and XML databases using XPath
 """
 
+import time
 import xml.etree.ElementTree as ET
 import sqlite3
 import os
 from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
+import mysql.connector
+from dotenv import load_dotenv
+import os
 
+
+# ENV_host="localhost"
+# ENV_user="root"
+# ENV_password="qwertyuiop"
+# ENV_database="customerdb"
+# ENV_base_path = '/Users/paragkatoch/Downloads/downloads/term 2/subs/DM/proj/phase1'
+
+load_dotenv()
+ENV_host = os.getenv("ENV_HOST")
+ENV_user = os.getenv("ENV_USER")
+ENV_password = os.getenv("ENV_PASSWORD")
+ENV_database = os.getenv("ENV_DATABASE")
+ENV_base_path = os.getenv("ENV_BASE_PATH")
 
 @dataclass
 class QueryFilter:
@@ -181,9 +198,19 @@ class QueryExecutor:
         self.xml_tree = ET.parse(xml_path)
         self.xml_root = self.xml_tree.getroot()
         
+        print(f"Loaded {self.xml_root.tag} xml database")
+        
         # Connect to relational database
-        self.db_conn = sqlite3.connect(db_path)
+        # self.db_conn = sqlite3.connect(db_path)
+        self.db_conn = mysql.connector.connect(
+            host=ENV_host,
+            user=ENV_user,
+            password=ENV_password,
+            database=ENV_database
+        )
         self.db_cursor = self.db_conn.cursor()
+        
+        print(f"Loaded {self.db_conn.database} sql database")
     
     def execute_view(self, view_name: str) -> List[Dict[str, Any]]:
         """
@@ -494,14 +521,51 @@ class QueryExecutor:
         self.db_conn.close()
 
 
+def print_results(view_name: str, results: list):
+    """Pretty print query results"""
+    print(f"\n{'=' * 80}")
+    print(f"VIEW: {view_name}")
+    print(f"{'=' * 80}")
+    
+    if not results:
+        print("No results")
+        return
+    
+    # Get all unique keys from all rows
+    all_keys = set()
+    for row in results:
+        all_keys.update(row.keys())
+    
+    # Print header
+    keys = sorted(all_keys)
+    header = " | ".join(f"{k:15}" for k in keys)
+    print(header)
+    print("-" * len(header))
+    
+    # Print rows
+    for row in results:
+        values = [str(row.get(k, '')).rjust(15) for k in keys]
+        print(" | ".join(values))
+    
+    print(f"\nTotal rows: {len(results)}")
+
+
 def main():
     """Example usage of the query engine"""
     
-    base_path = '/Users/paragkatoch/Downloads/downloads/term 2/subs/DM/proj/phase1'
+    print("XDM Views: Launching...")
+    print("\nXDM Views: Reading Metaschema....")
     
     # Load metadata
+    base_path = ENV_base_path
     metaschema = MetaSchemaLoader(os.path.join(base_path, 'MetaSchema.xml'))
     views = ViewLoader(os.path.join(base_path, 'views/views.xml'))
+    
+    print(f"Found {len(metaschema.databases)} databases")
+    print(f"Found {len(metaschema.entities)} entities")
+    print(f"Found {len(views.views)} views")
+    
+    print("\nXDM Views: Loading Databases....")
     
     # Create executor
     executor = QueryExecutor(
@@ -511,14 +575,29 @@ def main():
         os.path.join(base_path, 'dummy_data/purchaseorders.xml')
     )
     
-    # Execute views
-    print("\n=== HighValueCustomers View ===")
-    results = executor.execute_view('HighValueCustomers')
-    print(f"Results: {results}\n")
+    print("\nXDM Views: Launching....")
+    time.sleep(3)
     
-    print("\n=== CustomersByItem View ===")
-    results = executor.execute_view('CustomersByItem')
-    print(f"Results: {results}\n")
+    view_list = list(views.views.values())
+    print("\n\n\n=======  XDM Views  =======\n\n")
+    
+    while 1:
+        print("Available Views: ")
+        
+        for i, view in enumerate(view_list, start=1):
+            print(f"{i}. {view['name']}")
+        print("0. Exit")
+
+        choice = int(input("\nSelect a view: "))
+        
+        if choice == 0:
+            print("\nExiting....")
+            break
+        
+        selected_view = view_list[choice - 1]["name"]
+        results = executor.execute_view(selected_view)
+        print_results(selected_view, results)
+        input("\n")
     
     executor.close()
 
