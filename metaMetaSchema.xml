@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+
+    <xs:simpleType name="OperatorType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="="/>
+            <xs:enumeration value=">"/>
+            <xs:enumeration value="<"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <xs:element name="MetaSchema">
+        <xs:complexType>
+            <xs:sequence>
+
+                <!-- Databases -->
+                <xs:element name="Databases">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="Database" maxOccurs="unbounded">
+                                <xs:complexType>
+                                    <xs:sequence>
+                                        <xs:element name="Name" type="xs:string"/>
+                                        <xs:element name="Type" type="xs:string"/>
+                                    </xs:sequence>
+                                    <xs:attribute name="id" type="xs:string" use="required"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+
+                <!-- Entities -->
+                <xs:element name="Entities">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="Entity" maxOccurs="unbounded">
+                                <xs:complexType>
+                                    <xs:sequence>
+                                        <xs:element name="DatabaseRef" type="xs:string"/>
+                                        <xs:element name="BasePath" type="xs:string"/>
+                                        <xs:element name="Attributes">
+                                            <xs:complexType>
+                                                <xs:sequence>
+                                                    <xs:element name="Attribute" maxOccurs="unbounded">
+                                                        <xs:complexType>
+                                                            <xs:attribute name="name" type="xs:string" use="required"/>
+                                                            <xs:attribute name="type" type="xs:string" use="required"/>
+                                                            <xs:attribute name="key" type="xs:string" use="optional"/>
+                                                            <xs:attribute name="path" type="xs:string" use="optional"/>
+                                                        </xs:complexType>
+                                                    </xs:element>
+                                                </xs:sequence>
+                                            </xs:complexType>
+                                        </xs:element>
+                                    </xs:sequence>
+                                    <xs:attribute name="name" type="xs:string" use="required"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+
+                <!-- Relationships -->
+                <xs:element name="Relationships">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="Relationship" maxOccurs="unbounded">
+                                <xs:complexType>
+                                    <xs:sequence>
+                                        <xs:element name="LeftEntity" type="xs:string"/>
+                                        <xs:element name="RightEntity" type="xs:string"/>
+
+                                        <xs:element name="Condition">
+                                            <xs:complexType>
+                                                <xs:sequence>
+                                                    <xs:element name="Left">
+                                                        <xs:complexType>
+                                                            <xs:sequence>
+                                                                <xs:element name="Entity" type="xs:string"/>
+                                                                <xs:element name="Attribute" type="xs:string"/>
+                                                            </xs:sequence>
+                                                        </xs:complexType>
+                                                    </xs:element>
+
+                                                    <xs:element name="Operator" type="OperatorType"/>
+
+                                                    <xs:element name="Right">
+                                                        <xs:complexType>
+                                                            <xs:sequence>
+                                                                <xs:element name="Entity" type="xs:string"/>
+                                                                <xs:element name="Attribute" type="xs:string"/>
+                                                            </xs:sequence>
+                                                        </xs:complexType>
+                                                    </xs:element>
+
+                                                </xs:sequence>
+                                            </xs:complexType>
+                                        </xs:element>
+
+                                    </xs:sequence>
+                                    <xs:attribute name="name" type="xs:string" use="required"/>
+                                    <xs:attribute name="type" type="xs:string" use="required"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+
+                <!-- Views -->
+                <xs:element name="Views">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="View" maxOccurs="unbounded">
+                                <xs:complexType>
+                                    <xs:sequence>
+
+                                        <!-- Projection -->
+                                        <xs:element name="Projection">
+                                            <xs:complexType>
+                                                <xs:sequence>
+                                                    <xs:element name="Entity" maxOccurs="unbounded">
+                                                        <xs:complexType>
+                                                            <xs:sequence>
+                                                                <xs:element name="Attribute" type="xs:string" maxOccurs="unbounded"/>
+                                                            </xs:sequence>
+                                                            <xs:attribute name="name" type="xs:string" use="required"/>
+                                                        </xs:complexType>
+                                                    </xs:element>
+                                                </xs:sequence>
+                                            </xs:complexType>
+                                        </xs:element>
+
+                                        <!-- Base Entities -->
+                                        <xs:element name="BaseEntities">
+                                            <xs:complexType>
+                                                <xs:sequence>
+                                                    <xs:element name="Entity" type="xs:string" maxOccurs="unbounded"/>
+                                                </xs:sequence>
+                                            </xs:complexType>
+                                        </xs:element>
+
+                                        <!-- Relationship Reference -->
+                                        <xs:element name="RelationshipRef" type="xs:string" minOccurs="0"/>
+
+                                        <!-- Filter -->
+                                        <xs:element name="Filter" minOccurs="0">
+                                            <xs:complexType>
+                                                <xs:sequence>
+                                                    <xs:element name="Entity" type="xs:string"/>
+                                                    <xs:element name="Attribute" type="xs:string"/>
+                                                    <xs:element name="Operator" type="OperatorType"/>
+                                                    <xs:element name="Value" type="xs:string"/>
+                                                </xs:sequence>
+                                            </xs:complexType>
+                                        </xs:element>
+
+                                    </xs:sequence>
+                                    <xs:attribute name="name" type="xs:string" use="required"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+    
+</xs:schema>

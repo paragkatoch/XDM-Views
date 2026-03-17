@@ -1,0 +1,84 @@
+<Views>
+    <!-- Customers with purchase amount > 10k -->
+    <View name="HighValueCustomers">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+        </Projection>
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+
+        <Filter>
+            <Entity>PurchaseOrder</Entity>
+            <Attribute>amount</Attribute>
+            <Operator>></Operator>
+            <Value>10000</Value>
+        </Filter>
+    </View>
+
+
+    <!-- Customer having purchase item = laptop -->
+    <View name="CustomersByItem">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+        </Projection>
+
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+
+        <Filter>
+            <Entity>PurchaseOrder</Entity>
+            <Attribute>item</Attribute>
+            <Operator>=</Operator>
+            <Value>Laptop</Value>
+            <!-- add select item_name, item_category to this as well -->
+        </Filter>
+    </View>
+
+
+    <!-- Purchases done by a customer 5 -->
+    <View name="CustomerPurchases">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>order_id</Attribute>
+                <Attribute>item</Attribute>
+                <Attribute>amount</Attribute>
+            </Entity>
+        </Projection>
+        
+        <BaseEntities>
+            <Entity>PurchaseOrder</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+
+        <Filter>
+            <Entity>PurchaseOrder</Entity>
+            <Attribute>customer_id</Attribute>
+            <Operator>=</Operator>
+            <Value>5</Value>
+        </Filter>
+    </View>
+
+</Views>

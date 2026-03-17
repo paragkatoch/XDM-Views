@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<MetaSchema>
+
+  <Databases>
+    <Database id="DB1">
+      <Name>CustomerDB</Name>
+      <Type>Relational</Type>
+    </Database>
+
+    <Database id="DB2">
+      <Name>PurchaseOrderDB</Name>
+      <Type>XML</Type>
+    </Database>
+  </Databases>
+
+  <Entities>
+
+    <Entity name="Customer">
+      <DatabaseRef>DB1</DatabaseRef>
+      <Attributes>
+        <Attribute name="customer_id" type="int" key="primary"/>
+        <Attribute name="name" type="string"/>
+        <Attribute name="city" type="string"/>
+      </Attributes>
+    </Entity>
+
+    <Entity name="PurchaseOrder">
+      <DatabaseRef>DB2</DatabaseRef>
+      <BasePath>/PurchaseOrders/PurchaseOrder</BasePath>
+      <Attributes>
+        <Attribute name="order_id" type="int" path="order_id"/>
+        <Attribute name="customer_id" type="int" path="customer_id"/>
+        <Attribute name="amount" type="int" path="amount"/>
+        <!-- nested logical attributes -->
+        <Attribute name="item_name" type="string" path="item/item_name"/>
+        <Attribute name="item_category" type="string" path="item/item_category"/>
+        <!--❗ what to do if purchaseOrder has n items each having item_name, item_category??? -->
+      </Attributes>
+    </Entity>
+
+  </Entities>
+
+  <Relationships>
+
+    <Relationship name="CustomerPurchaseJoin" type="EQUI_JOIN">
+      <LeftEntity>Customer</LeftEntity>
+      <RightEntity>PurchaseOrder</RightEntity>
+
+      <Condition>
+        <Left>
+          <Entity>Customer</Entity>
+          <Attribute>customer_id</Attribute>
+        </Left>
+
+        <Operator>=</Operator>
+
+        <Right>
+          <Entity>PurchaseOrder</Entity>
+          <Attribute>customer_id</Attribute>
+        </Right>
+      </Condition>
+
+    </Relationship>
+
+  </Relationships>
+
+</MetaSchema>
