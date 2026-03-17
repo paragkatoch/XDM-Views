@@ -68,24 +68,3 @@ Or manually execute it inside MySQL.
 ```bash
 python query_engine.py
 ```
-
----
-
-## 🔍 How It Works
-
-1. **MetaSchema.xml**
-
-   * Defines databases, entities, attributes, relationships
-
-2. **views.xml**
-
-   * Defines projections, filters, and joins
-
-3. **Query Engine**
-
-   * Reads metadata
-   * Executes:
-
-     * XPath queries on XML
-     * SQL queries on MySQL
-   * Joins results dynamically
