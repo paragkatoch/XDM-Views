@@ -7,6 +7,13 @@
                 <Attribute>name</Attribute>
                 <Attribute>city</Attribute>
             </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>customer_id</Attribute>
+                <Attribute>order_id</Attribute>
+                <Attribute>item</Attribute>
+                <Attribute>amount</Attribute>
+            </Entity>
         </Projection>
         <BaseEntities>
             <Entity>Customer</Entity>
@@ -15,12 +22,12 @@
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
 
-        <Filter>
-            <Entity>PurchaseOrder</Entity>
-            <Attribute>amount</Attribute>
-            <Operator>></Operator>
-            <Value>10000</Value>
-        </Filter>
+        <Filters>
+            <Filter>
+                <Entity>PurchaseOrder</Entity>
+                <Query>/PurchaseOrders/PurchaseOrder [amount > 10000]</Query>
+            </Filter>
+        </Filters>
     </View>
 
 
@@ -32,6 +39,13 @@
                 <Attribute>name</Attribute>
                 <Attribute>city</Attribute>
             </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>customer_id</Attribute>
+                <Attribute>order_id</Attribute>
+                <Attribute>item</Attribute>
+                <Attribute>amount</Attribute>
+            </Entity>
         </Projection>
 
         <BaseEntities>
@@ -41,13 +55,12 @@
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
 
-        <Filter>
-            <Entity>PurchaseOrder</Entity>
-            <Attribute>item</Attribute>
-            <Operator>=</Operator>
-            <Value>Laptop</Value>
-            <!-- add select item_name, item_category to this as well -->
-        </Filter>
+        <Filters>
+            <Filter>
+                <Entity>PurchaseOrder</Entity>
+                <Query>/PurchaseOrders/PurchaseOrder [item/item_name = Laptop]</Query>
+            </Filter>
+        </Filters>
     </View>
 
 
@@ -61,6 +74,7 @@
             </Entity>
 
             <Entity name="PurchaseOrder">
+                <Attribute>customer_id</Attribute>
                 <Attribute>order_id</Attribute>
                 <Attribute>item</Attribute>
                 <Attribute>amount</Attribute>
@@ -68,6 +82,7 @@
         </Projection>
         
         <BaseEntities>
+            <Entity>Customer</Entity>
             <Entity>PurchaseOrder</Entity>
         </BaseEntities>
 
@@ -75,10 +90,108 @@
 
         <Filter>
             <Entity>PurchaseOrder</Entity>
-            <Attribute>customer_id</Attribute>
-            <Operator>=</Operator>
-            <Value>5</Value>
+            <Query>/PurchaseOrders/PurchaseOrder [customer_id = 5]</Query>
         </Filter>
     </View>
+    <!-- Purchases done by customers in New York -->
+    <View name="Purchases of New York">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>customer_id</Attribute>
+                <Attribute>order_id</Attribute>
+                <Attribute>amount</Attribute>
+            </Entity>
+        </Projection>
+        
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+
+        <Filters>
+            <Filter>
+                <Entity>Customer</Entity>
+                <Attribute>city</Attribute>
+                <Operator>=</Operator>
+                <Value>New York</Value>
+            </Filter>
+        </Filters>
+    </View>
+
+    <!-- CASE 3: Both SQL and XML filters - High value purchases from New York -->
+    <View name="HighValueNYOrders">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>order_id</Attribute>
+                <Attribute>customer_id</Attribute>
+                <Attribute>amount</Attribute>
+                <Attribute>item_name</Attribute>
+            </Entity>
+        </Projection>
+        
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+
+        <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
+        <Filters>
+            <Filter>
+                <Entity>Customer</Entity>
+                <Attribute>city</Attribute>
+                <Operator>=</Operator>
+                <Value>New York</Value>
+            </Filter>
+            <Filter>
+                <Entity>PurchaseOrder</Entity>
+                <Query>/PurchaseOrders/PurchaseOrder [amount > 5000]</Query>
+            </Filter>
+        </Filters>
+    </View>
+
+    <View name="Whole Data">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>order_id</Attribute>
+                <Attribute>customer_id</Attribute>
+                <Attribute>amount</Attribute>
+                <Attribute>item</Attribute>
+            </Entity>
+        </Projection>
+        
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+
+        <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
+        <Filters>
+        </Filters>
+    </View>
+
 
 </Views>

@@ -31,9 +31,10 @@ ENV_base_path = os.getenv("ENV_BASE_PATH")
 class QueryFilter:
     """Represents a filter condition"""
     entity: str
-    attribute: str
-    operator: str
-    value: Any
+    attribute: str = None
+    operator: str = None
+    value: Any = None
+    query: str = None  # Direct XPath/SQL query for new filter format
 
 
 class MetaSchemaLoader:
@@ -50,7 +51,7 @@ class MetaSchemaLoader:
     def _parse(self):
         """Parse MetaSchema.xml"""
         # Parse databases
-        for db_elem in self.root.findall('.//Database'):
+        for db_elem in self.root.findall('.//Databases/Database'):
             db_id = db_elem.get('id')
             name_elem = db_elem.find('Name')
             type_elem = db_elem.find('Type')
@@ -63,7 +64,7 @@ class MetaSchemaLoader:
             }
         
         # Parse entities
-        for entity_elem in self.root.findall('.//Entity'):
+        for entity_elem in self.root.findall('.//Entities/Entity'):
             entity_name = entity_elem.get('name')
             db_ref_elem = entity_elem.find('DatabaseRef')
             db_ref = db_ref_elem.text if db_ref_elem is not None else None
@@ -97,7 +98,7 @@ class MetaSchemaLoader:
             }
         
         # Parse relationships
-        for rel_elem in self.root.findall('.//Relationship'):
+        for rel_elem in self.root.findall('.//Relationships/Relationship'):
             rel_name = rel_elem.get('name')
             rel_type = rel_elem.get('type')
             left_entity_elem = rel_elem.find('LeftEntity')
@@ -165,22 +166,67 @@ class ViewLoader:
             rel_ref_elem = view_elem.find('.//RelationshipRef')
             relationship_ref = rel_ref_elem.text if rel_ref_elem is not None else None
             
-            # Parse filter
-            filter_elem = view_elem.find('.//Filter')
-            view_filter = None
-            if filter_elem is not None:
-                entity = filter_elem.find('Entity').text
-                attribute = filter_elem.find('Attribute').text
-                operator = filter_elem.find('Operator').text
-                value = filter_elem.find('Value').text
-                view_filter = QueryFilter(entity, attribute, operator, value)
+            # Parse filters - new format with Query element or traditional format
+            filters = {}
+            
+            # Try new format first: <Filters><Filter>... (can be SQL or XML)
+            filters_container = view_elem.find('.//Filters')
+            if filters_container is not None:
+                for filter_elem in filters_container.findall('Filter'):
+                    entity_elem = filter_elem.find('Entity')
+                    query_elem = filter_elem.find('Query')
+                    attribute_elem = filter_elem.find('Attribute')
+                    operator_elem = filter_elem.find('Operator')
+                    value_elem = filter_elem.find('Value')
+                    
+                    if entity_elem is not None:
+                        entity = entity_elem.text
+                        
+                        # Case 1: Filter has Query element (XML query)
+                        if query_elem is not None:
+                            query = query_elem.text
+                            filters[entity] = QueryFilter(entity=entity, query=query)
+                        
+                        # Case 2: Filter has Attribute/Operator/Value (SQL filter)
+                        elif attribute_elem is not None and operator_elem is not None and value_elem is not None:
+                            attribute = attribute_elem.text
+                            operator = operator_elem.text
+                            value = value_elem.text
+                            filters[entity] = QueryFilter(entity=entity, attribute=attribute, 
+                                                         operator=operator, value=value)
+            
+            # Fallback to old format: <Filter><Entity>... or <Filter><Entity><Query>
+            if not filters:
+                filter_elem = view_elem.find('.//Filter')
+                if filter_elem is not None:
+                    entity_elem = filter_elem.find('Entity')
+                    
+                    if entity_elem is not None:
+                        entity = entity_elem.text
+                        
+                        # Check if it has Query (new XPath format in old Filter container)
+                        query_elem = filter_elem.find('Query')
+                        if query_elem is not None:
+                            query = query_elem.text
+                            filters[entity] = QueryFilter(entity=entity, query=query)
+                        else:
+                            # Traditional attribute/operator/value format
+                            attribute_elem = filter_elem.find('Attribute')
+                            operator_elem = filter_elem.find('Operator')
+                            value_elem = filter_elem.find('Value')
+                            
+                            attribute = attribute_elem.text if attribute_elem is not None else None
+                            operator = operator_elem.text if operator_elem is not None else None
+                            value = value_elem.text if value_elem is not None else None
+                            filters[entity] = QueryFilter(entity=entity, attribute=attribute, 
+                                                          operator=operator, value=value)
             
             self.views[view_name] = {
                 'name': view_name,
                 'projection': projection,
                 'base_entities': base_entities,
                 'relationship_ref': relationship_ref,
-                'filter': view_filter
+                'filters': filters  # Now a dict of entity -> QueryFilter
             }
 
 
@@ -216,6 +262,11 @@ class QueryExecutor:
         """
         Execute a view query and return results as list of dictionaries
         
+        New Logic:
+        - If only XML filter: apply XPath, then join with SQL if baseEntities specifies SQL entity
+        - If only SQL filter: apply SQL, then join with XML if baseEntities specifies XML entity
+        - If both filters: apply both separately, then join them
+        
         Args:
             view_name: Name of the view to execute
             
@@ -224,15 +275,13 @@ class QueryExecutor:
         """
         view = self.views.views[view_name]
         
-        # Get entities involved
+        # Get entities and determine types
         base_entities = view['base_entities']
         projection = view['projection']
-        view_filter = view['filter']
+        filters = view['filters']  # dict of entity -> QueryFilter
         relationship_ref = view['relationship_ref']
         
-        results = {}
-        
-        # Determine which entity is relational and which is XML
+        # Categorize entities by database type
         relational_entity = None
         xml_entity = None
         
@@ -246,53 +295,99 @@ class QueryExecutor:
             elif db_info['type'] == 'XML':
                 xml_entity = entity_name
         
-        # Execute XML query first (with filter)
-        if xml_entity:
+        # Determine which entities have filters
+        sql_filter = filters.get(relational_entity) if relational_entity else None
+        xml_filter = filters.get(xml_entity) if xml_entity else None
+        
+        results = {}
+        
+        # Case 1: Only XML filter
+        if xml_filter and not sql_filter:
+            print(f"\n[CASE 1] XML Filter Only")
             entity_meta = self.metaschema.entities[xml_entity]
-            xml_filter = view_filter if view_filter and view_filter.entity == xml_entity else None
-            xml_results = self._query_xml(xml_entity, entity_meta, None, xml_filter)
+            xml_results = self._query_xml_with_xquery(xml_entity, entity_meta, 
+                                                      projection.get(xml_entity), xml_filter)
             results[xml_entity] = xml_results
             
-            # Extract customer_ids from XML results for SQL query
-            if xml_results and relational_entity and relationship_ref:
-                customer_ids = set()
-                for row in xml_results:
-                    cid = row.get('customer_id')
-                    if cid is not None:
-                        customer_ids.add(cid)
-                
-                # Execute SQL query with filtered customer_ids
+            # Join with SQL table if relational_entity is in baseEntities
+            if relational_entity:
+                customer_ids = self._extract_join_keys(xml_results, 'customer_id')
                 if customer_ids:
                     entity_meta = self.metaschema.entities[relational_entity]
                     sql_results = self._query_relational_with_ids(
-                        relational_entity, entity_meta, 
+                        relational_entity, entity_meta,
                         projection.get(relational_entity),
                         customer_ids
                     )
                     results[relational_entity] = sql_results
                 else:
                     results[relational_entity] = []
-            elif relational_entity:
-                # No filter, just get all from relational DB
-                entity_meta = self.metaschema.entities[relational_entity]
-                sql_results = self._query_relational(
-                    relational_entity, entity_meta,
-                    projection.get(relational_entity),
-                    None  # No filter
-                )
-                results[relational_entity] = sql_results
         
-        # Execute queries for relational entity if needed
-        elif relational_entity:
+        # Case 2: Only SQL filter
+        elif sql_filter and not xml_filter:
+            print(f"\n[CASE 2] SQL Filter Only")
             entity_meta = self.metaschema.entities[relational_entity]
-            sql_filter = view_filter if view_filter and view_filter.entity == relational_entity else None
-            results[relational_entity] = self._query_relational(
+            sql_results = self._query_relational_with_sql_filter(
                 relational_entity, entity_meta,
                 projection.get(relational_entity),
                 sql_filter
             )
+            results[relational_entity] = sql_results
+            
+            # Join with XML table if xml_entity is in baseEntities
+            if xml_entity:
+                customer_ids = self._extract_join_keys(sql_results, 'customer_id')
+                if customer_ids:
+                    entity_meta = self.metaschema.entities[xml_entity]
+                    xml_results = self._query_xml_with_customer_ids(
+                        xml_entity, entity_meta,
+                        projection.get(xml_entity),
+                        customer_ids
+                    )
+                    results[xml_entity] = xml_results
+                else:
+                    results[xml_entity] = []
         
-        # Return results
+        # Case 3: Both filters
+        elif sql_filter and xml_filter:
+            print(f"\n[CASE 3] Both Filters - Custom Join Query")
+            # Apply both filters separately
+            entity_meta_sql = self.metaschema.entities[relational_entity]
+            sql_results = self._query_relational_with_sql_filter(
+                relational_entity, entity_meta_sql,
+                projection.get(relational_entity),
+                sql_filter
+            )
+            results[relational_entity] = sql_results
+            
+            entity_meta_xml = self.metaschema.entities[xml_entity]
+            xml_results = self._query_xml_with_xquery(
+                xml_entity, entity_meta_xml,
+                projection.get(xml_entity),
+                xml_filter
+            )
+            results[xml_entity] = xml_results
+        
+        # Case 4: No filters
+        else:
+            print(f"\n[CASE 4] No Filters")
+            if relational_entity:
+                entity_meta = self.metaschema.entities[relational_entity]
+                sql_results = self._query_relational(
+                    relational_entity, entity_meta,
+                    projection.get(relational_entity)
+                )
+                results[relational_entity] = sql_results
+            
+            if xml_entity:
+                entity_meta = self.metaschema.entities[xml_entity]
+                xml_results = self._query_xml_unfiltered(
+                    xml_entity, entity_meta,
+                    projection.get(xml_entity)
+                )
+                results[xml_entity] = xml_results
+        
+        # Return results - join if multiple entities
         if len(base_entities) == 1:
             for entity_name in base_entities:
                 return results.get(entity_name, [])
@@ -300,9 +395,18 @@ class QueryExecutor:
             # Multiple entities - return joined results
             return self._join_results(base_entities, results, relationship_ref, projection)
     
+    def _extract_join_keys(self, results: List[Dict], key_name: str) -> set:
+        """Extract a specific key value from all results"""
+        keys = set()
+        for row in results:
+            val = row.get(key_name)
+            if val is not None:
+                keys.add(val)
+        return keys
+    
     def _query_relational(self, entity_name: str, entity_meta: Dict, 
-                          projected_attrs: List[str], view_filter: QueryFilter) -> List[Dict]:
-        """Execute query on relational database"""
+                          projected_attrs: List[str]) -> List[Dict]:
+        """Execute unfiltered query on relational database"""
         
         # Determine which attributes to select
         if projected_attrs:
@@ -313,15 +417,35 @@ class QueryExecutor:
         # Build SQL query
         select_clause = ', '.join(select_attrs)
         from_clause = entity_name
-        where_clause = ''
-        
-        # Add filter if it applies to this entity
-        if view_filter and view_filter.entity == entity_name:
-            where_clause = f"WHERE {view_filter.attribute} {view_filter.operator} '{view_filter.value}'"
         
         query = f"SELECT {select_clause} FROM {from_clause}"
-        if where_clause:
-            query += f" {where_clause}"
+        
+        print(f"[SQL Query] {query}")
+        
+        # Execute and fetch results
+        self.db_cursor.execute(query)
+        columns = [desc[0] for desc in self.db_cursor.description]
+        rows = self.db_cursor.fetchall()
+        
+        return [dict(zip(columns, row)) for row in rows]
+    
+    def _query_relational_with_sql_filter(self, entity_name: str, entity_meta: Dict, 
+                                          projected_attrs: List[str], sql_filter: QueryFilter) -> List[Dict]:
+        """Execute SQL query with filter using attribute/operator/value"""
+        
+        # Determine which attributes to select
+        if projected_attrs:
+            select_attrs = projected_attrs
+        else:
+            select_attrs = list(entity_meta['attributes'].keys())
+        
+        # Build SQL query with WHERE clause
+        select_clause = ', '.join(select_attrs)
+        from_clause = entity_name
+        
+        # SQL filters use traditional attribute/operator/value format
+        where_clause = f"WHERE {sql_filter.attribute} {sql_filter.operator} '{sql_filter.value}'"
+        query = f"SELECT {select_clause} FROM {from_clause} {where_clause}"
         
         print(f"[SQL Query] {query}")
         
@@ -359,76 +483,35 @@ class QueryExecutor:
         
         return [dict(zip(columns, row)) for row in rows]
     
-    def _query_xml(self, entity_name: str, entity_meta: Dict, 
-                   projected_attrs: List[str], view_filter: QueryFilter) -> List[Dict]:
-        """Execute query on XML database using XPath"""
+    def _query_xml_with_customer_ids(self, entity_name: str, entity_meta: Dict,
+                                     projected_attrs: List[str], customer_ids: set) -> List[Dict]:
+        """Execute query on XML database filtered by specific customer IDs"""
         
-        base_path = entity_meta['base_path']  # e.g., "/PurchaseOrders/PurchaseOrder"
+        base_path = entity_meta['base_path']
         attributes = entity_meta['attributes']
         
         # Convert absolute path to relative path for ElementTree
-        # /PurchaseOrders/PurchaseOrder -> PurchaseOrder (since root is PurchaseOrders)
         path_parts = base_path.lstrip('/').split('/')
-        element_name = path_parts[-1]  # Last part is the element we want
+        element_name = path_parts[-1]
         
-        print(f"[XPath Query] {base_path}", end="")
+        print(f"[XPath Query] {base_path} [customer_id IN {sorted(customer_ids)}]")
         
-        # Find all elements matching the element name (root element handles the rest)
+        # Find all elements matching the element name
         elements = self.xml_root.findall(element_name)
         
-        # Apply filter using Python (since ElementTree XPath is limited)
-        if view_filter and view_filter.entity == entity_name:
-            filter_attr = view_filter.attribute
-            operator = view_filter.operator
-            filter_value = view_filter.value
-            
-            # Resolve attribute name (handle "item" mapping to "item_name")
-            if filter_attr == 'item':
-                # Special case: "item" filter should check item_name
-                attr_path = attributes.get('item_name', {}).get('path')
-                if not attr_path:
-                    attr_path = 'item/item_name'
-            else:
-                attr_path = attributes.get(filter_attr, {}).get('path', filter_attr)
-            
-            print(f" [{attr_path} {operator} {filter_value}]")
-            
-            filtered_elements = []
-            for elem in elements:
-                elem_value = self._get_value_from_xml_element(elem, attr_path)
-                
-                if elem_value is None:
-                    continue
-                
-                # Convert to appropriate type for comparison
+        # Filter by customer_ids
+        filtered_elements = []
+        for elem in elements:
+            cid_elem = elem.find('customer_id')
+            if cid_elem is not None:
                 try:
-                    if '.' in str(filter_value):
-                        filter_val = float(filter_value)
-                        elem_val = float(elem_value)
-                    else:
-                        filter_val = int(filter_value)
-                        elem_val = int(elem_value)
+                    cid = int(cid_elem.text)
+                    if cid in customer_ids or str(cid) in customer_ids:
+                        filtered_elements.append(elem)
                 except (ValueError, TypeError):
-                    filter_val = str(filter_value)
-                    elem_val = str(elem_value)
-                
-                # Apply operator
-                if operator == '>' and elem_val > filter_val:
-                    filtered_elements.append(elem)
-                elif operator == '<' and elem_val < filter_val:
-                    filtered_elements.append(elem)
-                elif operator == '>=' and elem_val >= filter_val:
-                    filtered_elements.append(elem)
-                elif operator == '<=' and elem_val <= filter_val:
-                    filtered_elements.append(elem)
-                elif operator == '=' and elem_val == filter_val:
-                    filtered_elements.append(elem)
-                elif operator == '!=' and elem_val != filter_val:
-                    filtered_elements.append(elem)
-            
-            elements = filtered_elements
-        else:
-            print()
+                    pass
+        
+        elements = filtered_elements
         
         # Extract attributes from results
         if projected_attrs is None:
@@ -438,16 +521,217 @@ class QueryExecutor:
         for elem in elements:
             row = {}
             for attr_name in projected_attrs:
-                attr_info = attributes[attr_name]
-                attr_path = attr_info['path']
-                
-                # Navigate using path
-                value = self._get_value_from_xml_element(elem, attr_path)
-                row[attr_name] = value
+                # Handle nested attributes like "item" which maps to item_name and item_category
+                if attr_name == "item" and attr_name not in attributes:
+                    # Special handling for composite "item" attribute
+                    item_data = {}
+                    if "item_name" in attributes:
+                        attr_info = attributes["item_name"]
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        item_data['name'] = value
+                    
+                    if "item_category" in attributes:
+                        attr_info = attributes["item_category"]
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        item_data['category'] = value
+                    
+                    row['item'] = item_data
+                else:
+                    attr_info = attributes.get(attr_name)
+                    if attr_info:
+                        attr_path = attr_info['path']
+                        
+                        # Navigate using path
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        row[attr_name] = value
             
             results.append(row)
         
         return results
+    
+    def _query_xml_unfiltered(self, entity_name: str, entity_meta: Dict, 
+                              projected_attrs: List[str]) -> List[Dict]:
+        """Execute unfiltered query on XML database"""
+        
+        base_path = entity_meta['base_path']
+        attributes = entity_meta['attributes']
+        
+        # Convert absolute path to relative path
+        path_parts = base_path.lstrip('/').split('/')
+        element_name = path_parts[-1]
+        
+        print(f"[XPath Query] {base_path}")
+        
+        # Find all elements matching the element name
+        elements = self.xml_root.findall(element_name)
+        
+        # Extract attributes from results
+        if projected_attrs is None:
+            projected_attrs = list(attributes.keys())
+        
+        results = []
+        for elem in elements:
+            row = {}
+            for attr_name in projected_attrs:
+                # Handle nested attributes like "item" which maps to item_name and item_category
+                if attr_name == "item" and attr_name not in attributes:
+                    # Special handling for composite "item" attribute
+                    item_data = {}
+                    if "item_name" in attributes:
+                        attr_info = attributes["item_name"]
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        item_data['name'] = value
+                    
+                    if "item_category" in attributes:
+                        attr_info = attributes["item_category"]
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        item_data['category'] = value
+                    
+                    row['item'] = item_data
+                else:
+                    attr_info = attributes.get(attr_name)
+                    if attr_info:
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        row[attr_name] = value
+            results.append(row)
+        
+        return results
+    
+    def _query_xml_with_xquery(self, entity_name: str, entity_meta: Dict, 
+                               projected_attrs: List[str], xml_filter: QueryFilter) -> List[Dict]:
+        """Execute XML query using XPath/XQuery from filter"""
+        
+        base_path = entity_meta['base_path']
+        attributes = entity_meta['attributes']
+        
+        # Convert absolute path to relative path
+        path_parts = base_path.lstrip('/').split('/')
+        element_name = path_parts[-1]
+        
+        # Extract the query from filter (e.g., "/PurchaseOrders/PurchaseOrder [amount > 10000]")
+        xquery = xml_filter.query
+        print(f"[XPath Query] {xquery}")
+        
+        # Find all elements matching the element name
+        elements = self.xml_root.findall(element_name)
+        
+        # Parse the query to extract conditions
+        # Format: /path/to/element [condition]
+        filtered_elements = []
+        
+        if '[' in xquery and ']' in xquery:
+            # Extract the condition part: condition inside [ ]
+            condition_str = xquery[xquery.index('[') + 1 : xquery.index(']')]
+            filtered_elements = self._filter_xml_elements(elements, condition_str, attributes)
+        else:
+            filtered_elements = elements
+        
+        elements = filtered_elements
+        
+        # Extract attributes from results
+        if projected_attrs is None:
+            projected_attrs = list(attributes.keys())
+        
+        results = []
+        for elem in elements:
+            row = {}
+            for attr_name in projected_attrs:
+                # Handle nested attributes like "item" which maps to item_name and item_category
+                if attr_name == "item" and attr_name not in attributes:
+                    # Special handling for composite "item" attribute
+                    item_data = {}
+                    if "item_name" in attributes:
+                        attr_info = attributes["item_name"]
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        item_data['name'] = value
+                    
+                    if "item_category" in attributes:
+                        attr_info = attributes["item_category"]
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        item_data['category'] = value
+                    
+                    row['item'] = item_data
+                else:
+                    attr_info = attributes.get(attr_name)
+                    if attr_info:
+                        attr_path = attr_info['path']
+                        value = self._get_value_from_xml_element(elem, attr_path)
+                        row[attr_name] = value
+            
+            results.append(row)
+        
+        return results
+    
+    def _filter_xml_elements(self, elements: List[ET.Element], condition_str: str, 
+                             attributes: Dict) -> List[ET.Element]:
+        """
+        Filter XML elements based on condition string
+        Handles conditions like: "amount > 10000", "item/item_name = Laptop", "customer_id = 5"
+        """
+        filtered = []
+        
+        # Parse condition: supports patterns like "attr OP value" or "xpath OP value"
+        # Handle comparisons: >, <, >=, <=, =, !=
+        operators = ['>=', '<=', '!=', '>', '<', '=']
+        
+        for op in operators:
+            if f' {op} ' in condition_str:
+                parts = condition_str.split(f' {op} ')
+                if len(parts) == 2:
+                    attr_path = parts[0].strip()
+                    filter_value = parts[1].strip()
+                    
+                    # Try to convert value type
+                    try:
+                        if '.' in filter_value:
+                            filter_val = float(filter_value)
+                        else:
+                            filter_val = int(filter_value)
+                    except (ValueError, TypeError):
+                        filter_val = str(filter_value)
+                    
+                    for elem in elements:
+                        elem_value = self._get_value_from_xml_element(elem, attr_path)
+                        
+                        if elem_value is None:
+                            continue
+                        
+                        # Convert element value for comparison
+                        try:
+                            if '.' in str(filter_val):
+                                elem_val = float(elem_value)
+                            else:
+                                elem_val = int(elem_value)
+                        except (ValueError, TypeError):
+                            elem_val = str(elem_value)
+                        
+                        # Apply operator
+                        match = False
+                        if op == '>' and elem_val > filter_val:
+                            match = True
+                        elif op == '<' and elem_val < filter_val:
+                            match = True
+                        elif op == '>=' and elem_val >= filter_val:
+                            match = True
+                        elif op == '<=' and elem_val <= filter_val:
+                            match = True
+                        elif op == '=' and elem_val == filter_val:
+                            match = True
+                        elif op == '!=' and elem_val != filter_val:
+                            match = True
+                        
+                        if match:
+                            filtered.append(elem)
+                break
+        
+        return filtered
     
     def _get_value_from_xml_element(self, elem: ET.Element, path: str) -> Any:
         """Extract value from XML element using path"""
@@ -522,32 +806,25 @@ class QueryExecutor:
 
 
 def print_results(view_name: str, results: list):
-    """Pretty print query results"""
+    """Print query results in JSON format"""
+    import json
+    
     print(f"\n{'=' * 80}")
     print(f"VIEW: {view_name}")
-    print(f"{'=' * 80}")
+    print(f"{'=' * 80}\n")
     
     if not results:
-        print("No results")
+        print("No results\n")
         return
     
-    # Get all unique keys from all rows
-    all_keys = set()
-    for row in results:
-        all_keys.update(row.keys())
+    # Output as formatted JSON
+    output = {
+        "view": view_name,
+        "total_rows": len(results),
+        "data": results
+    }
     
-    # Print header
-    keys = sorted(all_keys)
-    header = " | ".join(f"{k:15}" for k in keys)
-    print(header)
-    print("-" * len(header))
-    
-    # Print rows
-    for row in results:
-        values = [str(row.get(k, '')).rjust(15) for k in keys]
-        print(" | ".join(values))
-    
-    print(f"\nTotal rows: {len(results)}")
+    print(json.dumps(output, indent=2))
 
 
 def main():
