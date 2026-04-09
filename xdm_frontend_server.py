@@ -13,11 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import tempfile
 import time
 import traceback
-import xml.etree.ElementTree as ET
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,28 +28,7 @@ from query_engine import MetaSchemaLoader, QueryExecutor, ViewLoader
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_METASCHEMA_PATH = BASE_DIR / "MetaSchema.xml"
 DEFAULT_VIEWS_PATH = BASE_DIR / "views" / "views.xml"
-DEFAULT_SQLITE_PATH = BASE_DIR / "dummy_data" / "customers.db"
 DEFAULT_XML_DATA_PATH = BASE_DIR / "dummy_data" / "purchaseorders.xml"
-
-
-class SQLiteQueryExecutor(QueryExecutor):
-    """Reuse QueryExecutor logic with the bundled SQLite sample database."""
-
-    def __init__(
-        self,
-        metaschema: MetaSchemaLoader,
-        views: ViewLoader,
-        db_path: str,
-        xml_path: str,
-    ) -> None:
-        self.metaschema = metaschema
-        self.views = views
-        self.db_path = db_path
-        self.xml_path = xml_path
-        self.xml_tree = ET.parse(xml_path)
-        self.xml_root = self.xml_tree.getroot()
-        self.db_conn = sqlite3.connect(db_path)
-        self.db_cursor = self.db_conn.cursor()
 
 
 def read_text(path: Path) -> str:
@@ -129,17 +106,42 @@ def inspect_payload(metaschema_xml: str, views_xml: str) -> Dict[str, Any]:
     return serialize_loader_state(metaschema, views)
 
 
+def get_mysql_source_details() -> Dict[str, str]:
+    required_keys = ["ENV_HOST", "ENV_USER", "ENV_DATABASE"]
+    missing = [key for key in required_keys if not os.getenv(key)]
+    if missing:
+        missing_text = ", ".join(missing)
+        raise RuntimeError(
+            f"Missing required database settings in .env: {missing_text}"
+        )
+
+    host = os.getenv("ENV_HOST", "")
+    user = os.getenv("ENV_USER", "")
+    database = os.getenv("ENV_DATABASE", "")
+    password = os.getenv("ENV_PASSWORD", "")
+
+    return {
+        "type": "MySQL",
+        "host": host,
+        "user": user,
+        "database": database,
+        "passwordConfigured": "yes" if password else "no",
+        "display": f"{user}@{host}/{database}",
+    }
+
+
 def execute_payload(
     metaschema_xml: str,
     views_xml: str,
     view_name: str,
 ) -> Dict[str, Any]:
     metaschema, views = load_from_xml_strings(metaschema_xml, views_xml)
+    mysql_source = get_mysql_source_details()
     started_at = time.perf_counter()
-    executor = SQLiteQueryExecutor(
+    executor = QueryExecutor(
         metaschema,
         views,
-        str(DEFAULT_SQLITE_PATH),
+        mysql_source["display"],
         str(DEFAULT_XML_DATA_PATH),
     )
 
@@ -177,11 +179,17 @@ class XDMRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/api/bootstrap":
+            mysql_source = get_mysql_source_details()
             payload = {
                 "metaschemaXml": read_text(DEFAULT_METASCHEMA_PATH),
                 "viewsXml": read_text(DEFAULT_VIEWS_PATH),
                 "dataSources": {
-                    "sqlitePath": str(DEFAULT_SQLITE_PATH),
+                    "relationalSource": mysql_source["display"],
+                    "relationalType": mysql_source["type"],
+                    "relationalHost": mysql_source["host"],
+                    "relationalUser": mysql_source["user"],
+                    "relationalDatabase": mysql_source["database"],
+                    "passwordConfigured": mysql_source["passwordConfigured"],
                     "xmlPath": str(DEFAULT_XML_DATA_PATH),
                 },
             }

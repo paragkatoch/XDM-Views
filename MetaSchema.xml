@@ -25,6 +25,17 @@
       </Attributes>
     </Entity>
 
+    <Entity name="CustomerLoyalty">
+      <DatabaseRef>DB1</DatabaseRef>
+      <Attributes>
+        <Attribute name="loyalty_id" type="int" key="primary"/>
+        <Attribute name="customer_id" type="int"/>
+        <Attribute name="membership_tier" type="string"/>
+        <Attribute name="reward_points" type="int"/>
+        <Attribute name="enrolled_on" type="string"/>
+      </Attributes>
+    </Entity>
+
     <Entity name="PurchaseOrder">
       <DatabaseRef>DB2</DatabaseRef>
       <BasePath>/PurchaseOrders/PurchaseOrder</BasePath>
@@ -57,6 +68,26 @@
 
         <Right>
           <Entity>PurchaseOrder</Entity>
+          <Attribute>customer_id</Attribute>
+        </Right>
+      </Condition>
+
+    </Relationship>
+
+    <Relationship name="CustomerLoyaltyJoin" type="EQUI_JOIN">
+      <LeftEntity>Customer</LeftEntity>
+      <RightEntity>CustomerLoyalty</RightEntity>
+
+      <Condition>
+        <Left>
+          <Entity>Customer</Entity>
+          <Attribute>customer_id</Attribute>
+        </Left>
+
+        <Operator>=</Operator>
+
+        <Right>
+          <Entity>CustomerLoyalty</Entity>
           <Attribute>customer_id</Attribute>
         </Right>
       </Condition>

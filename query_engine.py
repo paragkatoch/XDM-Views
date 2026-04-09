@@ -162,9 +162,12 @@ class ViewLoader:
             # Parse base entities
             base_entities = [entity.text for entity in view_elem.findall('.//BaseEntities/Entity')]
             
-            # Parse relationship ref
-            rel_ref_elem = view_elem.find('.//RelationshipRef')
-            relationship_ref = rel_ref_elem.text if rel_ref_elem is not None else None
+            # Parse relationship refs in declaration order
+            relationship_refs = [
+                rel_elem.text for rel_elem in view_elem.findall('.//RelationshipRef')
+                if rel_elem.text
+            ]
+            relationship_ref = relationship_refs[0] if relationship_refs else None
             
             # Parse filters - new format with Query element or traditional format
             filters = {}
@@ -225,6 +228,7 @@ class ViewLoader:
                 'name': view_name,
                 'projection': projection,
                 'base_entities': base_entities,
+                'relationship_refs': relationship_refs,
                 'relationship_ref': relationship_ref,
                 'filters': filters  # Now a dict of entity -> QueryFilter
             }
@@ -275,125 +279,56 @@ class QueryExecutor:
         """
         view = self.views.views[view_name]
         
-        # Get entities and determine types
         base_entities = view['base_entities']
         projection = view['projection']
-        filters = view['filters']  # dict of entity -> QueryFilter
-        relationship_ref = view['relationship_ref']
-        
-        # Categorize entities by database type
-        relational_entity = None
-        xml_entity = None
-        
-        for entity_name in base_entities:
-            entity_meta = self.metaschema.entities[entity_name]
-            db_ref = entity_meta['database_ref']
-            db_info = self.metaschema.databases[db_ref]
-            
-            if db_info['type'] == 'Relational':
-                relational_entity = entity_name
-            elif db_info['type'] == 'XML':
-                xml_entity = entity_name
-        
-        # Determine which entities have filters
-        sql_filter = filters.get(relational_entity) if relational_entity else None
-        xml_filter = filters.get(xml_entity) if xml_entity else None
-        
+        filters = view['filters']
+        relationship_refs = view.get('relationship_refs') or (
+            [view['relationship_ref']] if view.get('relationship_ref') else []
+        )
+
         results = {}
-        
-        # Case 1: Only XML filter
-        if xml_filter and not sql_filter:
-            print(f"\n[CASE 1] XML Filter Only")
-            entity_meta = self.metaschema.entities[xml_entity]
-            xml_results = self._query_xml_with_xquery(xml_entity, entity_meta, 
-                                                      projection.get(xml_entity), xml_filter)
-            results[xml_entity] = xml_results
-            
-            # Join with SQL table if relational_entity is in baseEntities
-            if relational_entity:
-                customer_ids = self._extract_join_keys(xml_results, 'customer_id')
-                if customer_ids:
-                    entity_meta = self.metaschema.entities[relational_entity]
-                    sql_results = self._query_relational_with_ids(
-                        relational_entity, entity_meta,
-                        projection.get(relational_entity),
-                        customer_ids
-                    )
-                    results[relational_entity] = sql_results
-                else:
-                    results[relational_entity] = []
-        
-        # Case 2: Only SQL filter
-        elif sql_filter and not xml_filter:
-            print(f"\n[CASE 2] SQL Filter Only")
-            entity_meta = self.metaschema.entities[relational_entity]
-            sql_results = self._query_relational_with_sql_filter(
-                relational_entity, entity_meta,
-                projection.get(relational_entity),
-                sql_filter
+
+        for entity_name in base_entities:
+            results[entity_name] = self._query_entity(
+                entity_name,
+                projection.get(entity_name),
+                filters.get(entity_name)
             )
-            results[relational_entity] = sql_results
-            
-            # Join with XML table if xml_entity is in baseEntities
-            if xml_entity:
-                customer_ids = self._extract_join_keys(sql_results, 'customer_id')
-                if customer_ids:
-                    entity_meta = self.metaschema.entities[xml_entity]
-                    xml_results = self._query_xml_with_customer_ids(
-                        xml_entity, entity_meta,
-                        projection.get(xml_entity),
-                        customer_ids
-                    )
-                    results[xml_entity] = xml_results
-                else:
-                    results[xml_entity] = []
-        
-        # Case 3: Both filters
-        elif sql_filter and xml_filter:
-            print(f"\n[CASE 3] Both Filters - Custom Join Query")
-            # Apply both filters separately
-            entity_meta_sql = self.metaschema.entities[relational_entity]
-            sql_results = self._query_relational_with_sql_filter(
-                relational_entity, entity_meta_sql,
-                projection.get(relational_entity),
-                sql_filter
-            )
-            results[relational_entity] = sql_results
-            
-            entity_meta_xml = self.metaschema.entities[xml_entity]
-            xml_results = self._query_xml_with_xquery(
-                xml_entity, entity_meta_xml,
-                projection.get(xml_entity),
-                xml_filter
-            )
-            results[xml_entity] = xml_results
-        
-        # Case 4: No filters
-        else:
-            print(f"\n[CASE 4] No Filters")
-            if relational_entity:
-                entity_meta = self.metaschema.entities[relational_entity]
-                sql_results = self._query_relational(
-                    relational_entity, entity_meta,
-                    projection.get(relational_entity)
-                )
-                results[relational_entity] = sql_results
-            
-            if xml_entity:
-                entity_meta = self.metaschema.entities[xml_entity]
-                xml_results = self._query_xml_unfiltered(
-                    xml_entity, entity_meta,
-                    projection.get(xml_entity)
-                )
-                results[xml_entity] = xml_results
-        
-        # Return results - join if multiple entities
+
         if len(base_entities) == 1:
             for entity_name in base_entities:
                 return results.get(entity_name, [])
-        else:
-            # Multiple entities - return joined results
-            return self._join_results(base_entities, results, relationship_ref, projection)
+
+        return self._join_results(base_entities, results, relationship_refs, projection)
+
+    def _query_entity(self, entity_name: str, projected_attrs: List[str],
+                      entity_filter: QueryFilter = None) -> List[Dict]:
+        """Query a single entity using the configured backend and optional filter."""
+        entity_meta = self.metaschema.entities[entity_name]
+        db_ref = entity_meta['database_ref']
+        db_info = self.metaschema.databases[db_ref]
+
+        if db_info['type'] == 'Relational':
+            if entity_filter and entity_filter.attribute and entity_filter.operator:
+                return self._query_relational_with_sql_filter(
+                    entity_name, entity_meta, projected_attrs, entity_filter
+                )
+            return self._query_relational(entity_name, entity_meta, projected_attrs)
+
+        if db_info['type'] == 'XML':
+            if entity_filter:
+                if not entity_filter.query and entity_filter.attribute and entity_filter.operator:
+                    entity_filter = QueryFilter(
+                        entity=entity_name,
+                        query=f"{entity_meta['base_path']} [{entity_filter.attribute} {entity_filter.operator} {entity_filter.value}]"
+                    )
+                if entity_filter.query:
+                    return self._query_xml_with_xquery(
+                        entity_name, entity_meta, projected_attrs, entity_filter
+                    )
+            return self._query_xml_unfiltered(entity_name, entity_meta, projected_attrs)
+
+        raise ValueError(f"Unsupported database type for entity {entity_name}: {db_info['type']}")
     
     def _extract_join_keys(self, results: List[Dict], key_name: str) -> set:
         """Extract a specific key value from all results"""
@@ -745,60 +680,135 @@ class QueryExecutor:
         
         return current.text if current is not None else None
     
-    def _join_results(self, entities: List[str], results: Dict[str, List[Dict]], 
-                      relationship_ref: str, projection: Dict) -> List[Dict]:
-        """Join results from multiple entities"""
-        
-        relationship = self.metaschema.relationships[relationship_ref]
+    def _join_results(self, entities: List[str], results: Dict[str, List[Dict]],
+                      relationship_refs: List[str], projection: Dict) -> List[Dict]:
+        """Join results from multiple entities using the declared relationship chain."""
+        if not relationship_refs:
+            raise ValueError("Multiple entities require at least one RelationshipRef")
+
+        pending_relationships = list(relationship_refs)
+        joined_rows = None
+        joined_entities = set()
+
+        while pending_relationships:
+            progress_made = False
+
+            for relationship_ref in list(pending_relationships):
+                relationship = self.metaschema.relationships[relationship_ref]
+                left_entity = relationship['left_entity']
+                right_entity = relationship['right_entity']
+                left_key, right_key = self._get_join_keys(relationship)
+
+                if joined_rows is None:
+                    joined_rows = self._join_row_sets(
+                        results.get(left_entity, []),
+                        results.get(right_entity, []),
+                        left_key,
+                        right_key
+                    )
+                    joined_entities.update({left_entity, right_entity})
+                elif left_entity in joined_entities and right_entity not in joined_entities:
+                    joined_rows = self._join_row_sets(
+                        joined_rows,
+                        results.get(right_entity, []),
+                        left_key,
+                        right_key
+                    )
+                    joined_entities.add(right_entity)
+                elif right_entity in joined_entities and left_entity not in joined_entities:
+                    joined_rows = self._join_row_sets(
+                        joined_rows,
+                        results.get(left_entity, []),
+                        right_key,
+                        left_key
+                    )
+                    joined_entities.add(left_entity)
+                elif left_entity in joined_entities and right_entity in joined_entities:
+                    pass
+                else:
+                    continue
+
+                pending_relationships.remove(relationship_ref)
+                progress_made = True
+                break
+
+            if not progress_made:
+                unresolved = ', '.join(pending_relationships)
+                raise ValueError(
+                    f"Could not resolve join path for entities {entities} using relationships: {unresolved}"
+                )
+
+        missing_entities = [entity for entity in entities if entity not in joined_entities]
+        if missing_entities:
+            raise ValueError(f"Entities are not connected by the declared relationships: {missing_entities}")
+
+        return joined_rows or []
+
+    def _get_join_keys(self, relationship: Dict) -> Tuple[str, str]:
+        """Resolve the left and right join keys for a relationship."""
         left_entity = relationship['left_entity']
         right_entity = relationship['right_entity']
-        
-        # Get join condition
         condition = relationship['condition']
+
         if condition:
             left_key = condition['left_attribute']
             right_key = condition['right_attribute']
         else:
-            # Fallback: find keys automatically
             left_key = None
             right_key = None
             for attr_name in self.metaschema.entities[left_entity]['attributes']:
                 if 'id' in attr_name.lower():
                     left_key = attr_name
                     break
-            
+
             for attr_name in self.metaschema.entities[right_entity]['attributes']:
                 if 'id' in attr_name.lower() and 'customer' in attr_name.lower():
                     right_key = attr_name
                     break
-        
+
         if not left_key or not right_key:
             raise ValueError("Could not determine join keys")
-        
-        left_results = results.get(left_entity, [])
-        right_results = results.get(right_entity, [])
-        
-        # Perform equi-join with type conversion
-        joined = []
-        for left_row in left_results:
-            for right_row in right_results:
-                left_val = left_row.get(left_key)
-                right_val = right_row.get(right_key)
-                
-                # Convert to same type for comparison (handle string/int mismatch from XML vs SQL)
+
+        return left_key, right_key
+
+    def _join_row_sets(self, left_rows: List[Dict[str, Any]], right_rows: List[Dict[str, Any]],
+                       left_key: str, right_key: str) -> List[Dict[str, Any]]:
+        """Join two row sets using normalized key values."""
+        right_index = {}
+        for right_row in right_rows:
+            join_value = self._normalize_join_value(right_row.get(right_key))
+            if join_value is None:
+                continue
+            right_index.setdefault(join_value, []).append(right_row)
+
+        joined_rows = []
+        for left_row in left_rows:
+            join_value = self._normalize_join_value(left_row.get(left_key))
+            if join_value is None:
+                continue
+            for right_row in right_index.get(join_value, []):
+                joined_rows.append({**left_row, **right_row})
+
+        return joined_rows
+
+    def _normalize_join_value(self, value: Any) -> Any:
+        """Normalize join values so XML strings and SQL ints compare consistently."""
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            value = value.strip()
+            if value == '':
+                return value
+            try:
+                return int(value)
+            except (ValueError, TypeError):
                 try:
-                    if isinstance(left_val, str) and isinstance(right_val, int):
-                        left_val = int(left_val)
-                    elif isinstance(left_val, int) and isinstance(right_val, str):
-                        right_val = int(right_val)
+                    return float(value)
                 except (ValueError, TypeError):
-                    pass
-                
-                if left_val == right_val:
-                    merged_row = {**left_row, **right_row}
-                    joined.append(merged_row)
-        
-        return joined
+                    return value
+
+        return value
     
     def close(self):
         """Close database connection"""

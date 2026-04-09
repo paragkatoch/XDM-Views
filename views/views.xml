@@ -163,9 +163,11 @@
                 <Query>/PurchaseOrders/PurchaseOrder [amount > 5000]</Query>
             </Filter>
         </Filters>
+
+        
     </View>
 
-    <View name="Whole Data">
+        <View name="Whole Data">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -179,17 +181,119 @@
                 <Attribute>amount</Attribute>
                 <Attribute>item</Attribute>
             </Entity>
+            <Entity name="CustomerLoyalty">
+                <Attribute>loyalty_id</Attribute>
+                <Attribute>customer_id</Attribute>
+                <Attribute>membership_tier</Attribute>
+                <Attribute>reward_points</Attribute>
+                <Attribute>enrolled_on</Attribute>
+            </Entity>
         </Projection>
         
         <BaseEntities>
             <Entity>Customer</Entity>
             <Entity>PurchaseOrder</Entity>
+            <Entity>CustomerLoyalty</Entity>
         </BaseEntities>
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+        <RelationshipRef>CustomerLoyaltyJoin</RelationshipRef>
+
 
         <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
         <Filters>
+        </Filters>
+    </View>
+
+
+
+
+    <View name="Customers with reward_points > 4000">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>order_id</Attribute>
+                <Attribute>customer_id</Attribute>
+                <Attribute>amount</Attribute>
+                <Attribute>item</Attribute>
+            </Entity>
+
+            <Entity name="CustomerLoyalty">
+                <Attribute>loyalty_id</Attribute>
+                <Attribute>customer_id</Attribute>
+                <Attribute>membership_tier</Attribute>
+                <Attribute>reward_points</Attribute>
+                <Attribute>enrolled_on</Attribute>
+            </Entity>
+        </Projection>
+        
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+            <Entity>CustomerLoyalty</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+        <RelationshipRef>CustomerLoyaltyJoin</RelationshipRef>
+
+        <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
+        <Filters>
+            <Filter>
+                <Entity>CustomerLoyalty</Entity>
+                <Attribute>reward_points</Attribute>
+                <Operator>></Operator>
+                <Value>4000</Value>
+            </Filter>
+        </Filters>
+    </View>
+
+
+    <View name="Customers with Gold membership">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+
+            <Entity name="PurchaseOrder">
+                <Attribute>order_id</Attribute>
+                <Attribute>customer_id</Attribute>
+                <Attribute>amount</Attribute>
+                <Attribute>item</Attribute>
+            </Entity>
+
+            <Entity name="CustomerLoyalty">
+                <Attribute>loyalty_id</Attribute>
+                <Attribute>customer_id</Attribute>
+                <Attribute>membership_tier</Attribute>
+                <Attribute>reward_points</Attribute>
+                <Attribute>enrolled_on</Attribute>
+            </Entity>
+        </Projection>
+        
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+            <Entity>CustomerLoyalty</Entity>
+        </BaseEntities>
+
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+        <RelationshipRef>CustomerLoyaltyJoin</RelationshipRef>
+
+        <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
+        <Filters>
+            <Filter>
+                <Entity>CustomerLoyalty</Entity>
+                <Attribute>membership_tier</Attribute>
+                <Operator>=</Operator>
+                <Value>Gold</Value>
+            </Filter>
         </Filters>
     </View>
 

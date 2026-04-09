@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Initialize dummy SQLite database from SQL script
+Initialize dummy SQLite database from SQL script.
+Creates both Customer and CustomerLoyalty sample tables.
 """
 
 import sqlite3
 import os
 
 def init_database():
-    """Create and populate the customer database"""
+    """Create and populate the sample relational database"""
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
     db_path = os.path.join(script_dir, 'customers.db')
@@ -37,13 +38,21 @@ def init_database():
     
     # Verify the data was inserted
     cursor.execute("SELECT COUNT(*) FROM Customer")
-    count = cursor.fetchone()[0]
+    customer_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM CustomerLoyalty")
+    loyalty_count = cursor.fetchone()[0]
     print(f"\n✓ Database initialized successfully!")
-    print(f"✓ Total customers inserted: {count}")
-    
+    print(f"✓ Total customers inserted: {customer_count}")
+    print(f"✓ Total loyalty rows inserted: {loyalty_count}")
+
     # Show sample data
     print("\nSample data from Customer table:")
     cursor.execute("SELECT * FROM Customer LIMIT 5")
+    for row in cursor.fetchall():
+        print(f"  {row}")
+
+    print("\nSample data from CustomerLoyalty table:")
+    cursor.execute("SELECT * FROM CustomerLoyalty LIMIT 5")
     for row in cursor.fetchall():
         print(f"  {row}")
     
