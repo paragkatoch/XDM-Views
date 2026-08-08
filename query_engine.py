@@ -9,9 +9,9 @@ import sqlite3
 import os
 from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
-import mysql.connector
 from dotenv import load_dotenv
 import os
+# import mysql.connector  # Uncomment if using MySQL
 
 
 # ENV_host="localhost"
@@ -251,16 +251,21 @@ class QueryExecutor:
         print(f"Loaded {self.xml_root.tag} xml database")
         
         # Connect to relational database
-        # self.db_conn = sqlite3.connect(db_path)
-        self.db_conn = mysql.connector.connect(
-            host=ENV_host,
-            user=ENV_user,
-            password=ENV_password,
-            database=ENV_database
-        )
+        # Option 1: Use SQLite (built-in, no installation needed)
+        db_path = os.path.join(ENV_base_path, 'dummy_data', 'customers.db')
+        self.db_conn = sqlite3.connect(db_path)
         self.db_cursor = self.db_conn.cursor()
+        print(f"Loaded SQLite database from {db_path}")
         
-        print(f"Loaded {self.db_conn.database} sql database")
+        # Option 2: Use MySQL (uncomment below to use - requires: pip install mysql-connector-python)
+        # self.db_conn = mysql.connector.connect(
+        #     host=ENV_host,
+        #     user=ENV_user,
+        #     password=ENV_password,
+        #     database=ENV_database
+        # )
+        # self.db_cursor = self.db_conn.cursor()
+        # print(f"Loaded {self.db_conn.database} MySQL database")
     
     def execute_view(self, view_name: str) -> List[Dict[str, Any]]:
         """

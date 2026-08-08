@@ -1,6 +1,6 @@
 <Views>
     <!-- Customers with purchase amount > 10k -->
-    <View name="HighValueCustomers">
+    <View name="HighValueCustomers (amount > 10000)">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -15,6 +15,7 @@
                 <Attribute>amount</Attribute>
             </Entity>
         </Projection>
+        
         <BaseEntities>
             <Entity>Customer</Entity>
             <Entity>PurchaseOrder</Entity>
@@ -32,7 +33,7 @@
 
 
     <!-- Customer having purchase item = laptop -->
-    <View name="CustomersByItem">
+    <View name="CustomersByItem (purchase item = laptop)">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -65,7 +66,7 @@
 
 
     <!-- Purchases done by a customer 5 -->
-    <View name="CustomerPurchases">
+    <View name="CustomerPurchases (customer id = 5)">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -127,7 +128,7 @@
     </View>
 
     <!-- CASE 3: Both SQL and XML filters - High value purchases from New York -->
-    <View name="HighValueNYOrders">
+    <View name="HighValueNYOrders (NY &amp;&amp; &gt;5000)">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -166,7 +167,6 @@
 
         
     </View>
-
         <View name="Whole Data">
         <Projection>
             <Entity name="Customer">
@@ -200,7 +200,7 @@
         <RelationshipRef>CustomerLoyaltyJoin</RelationshipRef>
 
 
-        <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
+
         <Filters>
         </Filters>
     </View>
@@ -253,14 +253,8 @@
     </View>
 
 
-    <View name="Customers with Gold membership">
+    <View name="Order from customers with gold membership">
         <Projection>
-            <Entity name="Customer">
-                <Attribute>customer_id</Attribute>
-                <Attribute>name</Attribute>
-                <Attribute>city</Attribute>
-            </Entity>
-
             <Entity name="PurchaseOrder">
                 <Attribute>order_id</Attribute>
                 <Attribute>customer_id</Attribute>
@@ -278,13 +272,12 @@
         </Projection>
         
         <BaseEntities>
-            <Entity>Customer</Entity>
             <Entity>PurchaseOrder</Entity>
             <Entity>CustomerLoyalty</Entity>
         </BaseEntities>
 
-        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
-        <RelationshipRef>CustomerLoyaltyJoin</RelationshipRef>
+        <RelationshipRef>PurchaseOrderLoyaltyJoin</RelationshipRef>
+
 
         <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
         <Filters>

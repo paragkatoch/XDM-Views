@@ -94,6 +94,29 @@
 
     </Relationship>
 
+    <Relationship name="PurchaseOrderLoyaltyJoin" type="EQUI_JOIN">
+      <LeftEntity>PurchaseOrder</LeftEntity>
+      <RightEntity>CustomerLoyalty</RightEntity>
+
+      <Condition>
+        <Left>
+          <Entity>PurchaseOrder</Entity>
+          <Attribute>customer_id</Attribute>
+        </Left>
+
+        <Operator>=</Operator>
+
+        <Right>
+          <Entity>CustomerLoyalty</Entity>
+          <Attribute>customer_id</Attribute>
+        </Right>
+      </Condition>
+
+    </Relationship>
+
+
+   
+
   </Relationships>
 
 </MetaSchema>
