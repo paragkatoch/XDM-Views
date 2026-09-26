@@ -6,12 +6,360 @@ const OUTPUT_OPTIONS = [
 	{ value: "json", label: "JSON only" },
 ];
 
-function formatFilter(filter) {
-	if (filter.query) {
-		return `${filter.entity}: ${filter.query}`;
+const EXPORT_OPTIONS = [
+	{ format: "json", label: "JSON" },
+	{ format: "csv", label: "CSV" },
+	{ format: "xlsx", label: "Excel" },
+	{ format: "native", label: "Native" },
+];
+
+const PARAMETER_TYPE_LABELS = {
+	string: "Text",
+	int: "Whole number",
+	float: "Decimal",
+};
+
+function formatParameterLabel(name) {
+	const words = {
+		id: "ID",
+		min: "Minimum",
+		max: "Maximum",
+	};
+
+	return name
+		.split("_")
+		.filter(Boolean)
+		.map((word) => words[word] ?? word.charAt(0).toUpperCase() + word.slice(1))
+		.join(" ");
+}
+
+function formatParameterHint(param) {
+	const typeLabel = PARAMETER_TYPE_LABELS[param.type] ?? param.type;
+	if (param.default == null || param.default === "") {
+		return typeLabel;
 	}
 
-	return `${filter.entity}: ${filter.attribute} ${filter.operator} ${filter.value}`;
+	return `${typeLabel} · Default ${param.default}`;
+}
+
+const MEASURE_OPTIONS = [
+	{ value: "count", label: "Count" },
+	{ value: "sum", label: "Sum" },
+	{ value: "avg", label: "Average" },
+	{ value: "min", label: "Min" },
+	{ value: "max", label: "Max" },
+];
+
+const PAGE_SIZE_OPTIONS = [
+	{ value: 5, label: "5" },
+	{ value: 10, label: "10" },
+	{ value: 20, label: "20" },
+	{ value: 50, label: "50" },
+	{ value: 0, label: "All" },
+];
+
+function projectionFields(view) {
+	if (!view?.projection) {
+		return [];
+	}
+
+	return Object.entries(view.projection).flatMap(([entity, attributes]) =>
+		(attributes ?? []).map((attribute) => ({
+			entity,
+			attribute,
+			key: `${entity}.${attribute}`,
+			label: `${formatEntityName(entity)} · ${formatParameterLabel(attribute)}`,
+		})),
+	);
+}
+
+function pageLabel(result) {
+	if (!result) {
+		return "No run yet";
+	}
+
+	const total = result.totalCount ?? result.rowCount;
+	if (!result.rowCount) {
+		return `0 of ${total}`;
+	}
+
+	const start = (result.offset ?? 0) + 1;
+	const end = (result.offset ?? 0) + result.rowCount;
+	return `${start}–${end} of ${total}`;
+}
+
+function joinDescription(type) {
+	const descriptions = {
+		INNER: "Only rows that match on both sides",
+		LEFT: "Every left row, with matching right data",
+		RIGHT: "Every right row, with matching left data",
+		FULL: "Every row from both sides",
+		SEMI: "Left rows that have a match",
+		ANTI: "Left rows that do not have a match",
+	};
+	return descriptions[type] ?? "";
+}
+
+function sqlValue(raw) {
+	const text = String(raw ?? "").trim();
+	if (!text) {
+		return "NULL";
+	}
+	if (/^-?\d+(\.\d+)?$/.test(text)) {
+		return text;
+	}
+	return `'${text.replaceAll("'", "''")}'`;
+}
+
+function bindParameterText(text, parameters, values) {
+	if (!text) {
+		return text ?? "";
+	}
+	return String(text).replaceAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, name) => {
+		const spec = (parameters ?? []).find((item) => item.name === name);
+		const raw = values?.[name];
+		if (raw == null || String(raw).trim() === "") {
+			return spec?.default ?? match;
+		}
+		return String(raw);
+	});
+}
+
+function sortLabel(sortKey) {
+	if (!sortKey) {
+		return "";
+	}
+	const bare = sortKey.startsWith("alias:") ? sortKey.slice("alias:".length) : sortKey.split(".").at(-1);
+	return formatParameterLabel(bare);
+}
+
+function querySummary({
+	view,
+	parameterValues,
+	joinTypes,
+	groupBy,
+	measures,
+	having,
+	sortKey,
+	sortDirection,
+	pageSize,
+}) {
+	if (!view) {
+		return "Choose a view to see what will run.";
+	}
+
+	const entities = (view.baseEntities ?? []).map(formatEntityName).join(", ");
+	const joins = (view.relationshipRefs ?? []).map((ref, index) => {
+		const type = (joinTypes[index] || ref.type || "INNER").toLowerCase();
+		return `${type} join ${ref.name}`;
+	});
+	const filters = (view.filters ?? []).map((filter) => {
+		const text = bindParameterText(formatFilterCondition(filter), view.parameters, parameterValues);
+		return `${formatEntityName(filter.entity)} where ${text}`;
+	});
+	const parameters = (view.parameters ?? [])
+		.filter((param) => parameterValues?.[param.name] != null && String(parameterValues[param.name]).trim() !== "")
+		.map((param) => `${formatParameterLabel(param.name)} = ${parameterValues[param.name]}`);
+	const sentences = [`Run ${view.name} across ${entities || "the selected entities"}.`];
+	if (parameters.length) {
+		sentences.push(`Parameters: ${parameters.join(", ")}.`);
+	}
+	if (joins.length) {
+		sentences.push(`Join with ${joins.join(", then ")}.`);
+	}
+	if (filters.length) {
+		sentences.push(`Keep rows for ${filters.join("; ")}.`);
+	}
+	if (groupBy.length) {
+		const groups = groupBy.map((item) => formatParameterLabel(item.attribute)).join(", ");
+		const measureText = (measures.length ? measures : [{ fn: "count", attribute: "" }])
+			.map((measure) => `${measure.fn} of ${formatParameterLabel(measure.attribute || "rows")} as ${formatParameterLabel(measure.alias)}`)
+			.join(", ");
+		sentences.push(`Group by ${groups} and calculate ${measureText}.`);
+		const activeHaving = having.filter((item) => String(item.value ?? "").trim() !== "");
+		if (activeHaving.length) {
+			sentences.push(
+				`Keep groups where ${activeHaving
+					.map((item) => `${formatParameterLabel(item.alias)} ${item.operator} ${bindParameterText(item.value, view.parameters, parameterValues)}`)
+					.join(" and ")}.`,
+			);
+		}
+	}
+	if (sortKey) {
+		sentences.push(`Sort by ${sortLabel(sortKey)} ${sortDirection}.`);
+	}
+	sentences.push(pageSize ? `Show ${pageSize} rows per page.` : "Show every matching row.");
+	return sentences.join(" ");
+}
+
+function buildSqlPreview({
+	view,
+	summary,
+	parameterValues,
+	joinTypes,
+	groupBy,
+	measures,
+	having,
+	sortKey,
+	sortDirection,
+	pageSize,
+}) {
+	if (!view) {
+		return { logicalSql: "", sourceQueries: [] };
+	}
+
+	const entities = Object.fromEntries((summary?.entities ?? []).map((entity) => [entity.name, entity]));
+	const databases = Object.fromEntries((summary?.databases ?? []).map((database) => [database.id, database]));
+	const relationships = Object.fromEntries((summary?.relationships ?? []).map((relationship) => [relationship.name, relationship]));
+	const parameters = view.parameters ?? [];
+	const where = [];
+
+	for (const filter of view.filters ?? []) {
+		const raw = filter.query
+			? bindParameterText(formatFilterCondition(filter), parameters, parameterValues)
+			: `${filter.attribute} ${filter.operator} ${bindParameterText(filter.value, parameters, parameterValues)}`;
+		const match = raw.match(/^(.+?)\s*(>=|<=|!=|=|>|<)\s*(.+)$/);
+		if (!match) {
+			continue;
+		}
+		const column = match[1].trim().split("/").at(-1);
+		where.push(`${filter.entity}.${column} ${match[2]} ${sqlValue(match[3])}`);
+	}
+
+	const select = [];
+	if (groupBy.length) {
+		select.push(...groupBy.map((item) => `${item.entity}.${item.attribute}`));
+		for (const measure of measures.length ? measures : [{ fn: "count", alias: "row_count" }]) {
+			const argument = measure.attribute ? `${measure.entity}.${measure.attribute}` : "*";
+			select.push(`${measure.fn.toUpperCase()}(${argument}) AS ${measure.alias}`);
+		}
+	} else {
+		for (const [entity, attributes] of Object.entries(view.projection ?? {})) {
+			for (const attribute of attributes ?? []) {
+				select.push(`${entity}.${attribute}`);
+			}
+		}
+	}
+
+	const joinWords = {
+		INNER: "INNER JOIN",
+		LEFT: "LEFT JOIN",
+		RIGHT: "RIGHT JOIN",
+		FULL: "FULL OUTER JOIN",
+		SEMI: "SEMI JOIN",
+		ANTI: "ANTI JOIN",
+	};
+	const baseEntities = view.baseEntities ?? [];
+	const joined = new Set(baseEntities[0] ? [baseEntities[0]] : []);
+	const joinLines = [];
+	(view.relationshipRefs ?? []).forEach((ref, index) => {
+		const relationship = relationships[ref.name];
+		if (!relationship?.condition) {
+			return;
+		}
+		const type = joinTypes[index] || ref.type || "INNER";
+		const nextEntity = joined.has(relationship.left_entity) ? relationship.right_entity : relationship.left_entity;
+		const condition = relationship.condition;
+		joinLines.push(
+			`${joinWords[type] || "INNER JOIN"} ${nextEntity}\n  ON ${condition.left_entity}.${condition.left_attribute} ${condition.operator || "="} ${condition.right_entity}.${condition.right_attribute}`,
+		);
+		joined.add(nextEntity);
+	});
+
+	const lines = [
+		"SELECT",
+		`  ${(select.length ? select : ["*"]).join(",\n  ")}`,
+		`FROM ${baseEntities[0] || ""}`,
+		...joinLines,
+	];
+	if (where.length) {
+		lines.push(`WHERE ${where.join("\n  AND ")}`);
+	}
+	if (groupBy.length) {
+		lines.push(`GROUP BY ${groupBy.map((item) => `${item.entity}.${item.attribute}`).join(", ")}`);
+		const activeHaving = having.filter((item) => String(item.value ?? "").trim() !== "");
+		if (activeHaving.length) {
+			lines.push(
+				`HAVING ${activeHaving
+					.map((item) => `${item.alias} ${item.operator} ${sqlValue(bindParameterText(item.value, parameters, parameterValues))}`)
+					.join("\n   AND ")}`,
+			);
+		}
+	}
+	if (sortKey) {
+		const column = sortKey.startsWith("alias:")
+			? sortKey.slice("alias:".length)
+			: sortKey;
+		lines.push(`ORDER BY ${column} ${sortDirection.toUpperCase()}`);
+	}
+	if (pageSize) {
+		lines.push(`LIMIT ${pageSize}`);
+	}
+
+	const sourceQueries = baseEntities.map((entityName) => {
+		const entity = entities[entityName];
+		const database = databases[entity?.databaseRef];
+		const attributes = view.projection?.[entityName] ?? entity?.attributes ?? ["*"];
+		const entityFilters = (view.filters ?? []).filter((filter) => filter.entity === entityName);
+		if (database?.type === "XML") {
+			const xmlFilter = entityFilters.find((filter) => filter.query);
+			const text = xmlFilter
+				? bindParameterText(xmlFilter.query, parameters, parameterValues)
+				: (entity?.basePath || `/${entityName}`);
+			return { entity: entityName, language: "XPath", text };
+		}
+		const entityWhere = where
+			.filter((item) => item.startsWith(`${entityName}.`))
+			.map((item) => item.slice(entityName.length + 1));
+		const statement = [`SELECT ${attributes.join(", ")}`, `FROM ${entityName}`];
+		if (entityWhere.length) {
+			statement.push(`WHERE ${entityWhere.join(" AND ")}`);
+		}
+		return { entity: entityName, language: "SQL", text: statement.join("\n") };
+	});
+
+	return { logicalSql: `${lines.join("\n")};`, sourceQueries };
+}
+
+const HAVING_OPERATORS = [">", "<", ">=", "<=", "=", "!="];
+
+function nextAlias(base, used) {
+	if (!used.includes(base)) {
+		return base;
+	}
+
+	let index = 2;
+	while (used.includes(`${base}_${index}`)) {
+		index += 1;
+	}
+	return `${base}_${index}`;
+}
+
+function aliasForMeasure(fn, attribute, used) {
+	const base = fn === "count" && !attribute ? "row_count" : `${fn}_${attribute || "rows"}`;
+	return nextAlias(base, used);
+}
+
+const JOIN_OPTIONS = [
+	{ value: "INNER", label: "Inner" },
+	{ value: "LEFT", label: "Left" },
+	{ value: "RIGHT", label: "Right" },
+	{ value: "FULL", label: "Full" },
+	{ value: "SEMI", label: "Semi" },
+	{ value: "ANTI", label: "Anti" },
+];
+
+function formatEntityName(name) {
+	return name.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+function formatFilterCondition(filter) {
+	if (filter.query) {
+		const condition = filter.query.match(/\[([\s\S]+)\]/);
+		return condition ? condition[1].trim() : filter.query.trim();
+	}
+
+	return `${filter.attribute} ${filter.operator} ${filter.value}`;
 }
 
 function formatValue(value) {
@@ -24,6 +372,41 @@ function formatValue(value) {
 	}
 
 	return String(value);
+}
+
+function responseForDisplay(result) {
+	if (!result) {
+		return null;
+	}
+
+	return {
+		viewName: result.viewName,
+		rowCount: result.rowCount,
+		totalCount: result.totalCount,
+		limit: result.limit,
+		offset: result.offset,
+		elapsedMs: result.elapsedMs,
+		parameters: result.parameters,
+		joins: result.joins,
+		columns: result.columns,
+		rows: result.rows,
+	};
+}
+
+function filenameFromDisposition(header, fallback) {
+	const match = header?.match(/filename="([^"]+)"/);
+	return match?.[1] || fallback;
+}
+
+function downloadBlob(filename, blob) {
+	const url = URL.createObjectURL(blob);
+	const link = document.createElement("a");
+	link.href = url;
+	link.download = filename;
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+	URL.revokeObjectURL(url);
 }
 
 function formatApiError(payload) {
@@ -47,13 +430,14 @@ function Metric({ label, value }) {
 	);
 }
 
-function EditorPanel({ title, hint, value, onChange, onFilePick }) {
+function EditorPanel({ title, hint, description, value, onChange, onFilePick }) {
 	return (
 		<section className="editor-card">
 			<div className="section-header">
 				<div>
 					<p className="label">{title}</p>
 					<h3>{hint}</h3>
+					<p className="editor-description">{description}</p>
 				</div>
 				<label className="button button--secondary">
 					<input type="file" accept=".xml,text/xml,application/xml" onChange={onFilePick} />
@@ -65,7 +449,32 @@ function EditorPanel({ title, hint, value, onChange, onFilePick }) {
 				value={value}
 				onChange={(event) => onChange(event.target.value)}
 			/>
+			<div className="editor-footer">
+				<span>{value.split("\n").length} lines</span>
+				<span>XML source</span>
+			</div>
 		</section>
+	);
+}
+
+function DetailGroups({ groups, emptyText }) {
+	if (!groups.length) {
+		return <p className="muted-text">{emptyText}</p>;
+	}
+
+	return (
+		<div className="detail-stack">
+			{groups.map((group) => (
+				<div className="detail-block" key={group.title}>
+					<strong>{group.title}</strong>
+					{group.items ? (
+						<InfoList items={group.items} emptyText="" />
+					) : (
+						<span>{group.text}</span>
+					)}
+				</div>
+			))}
+		</div>
 	);
 }
 
@@ -88,13 +497,25 @@ function ResultsTable({ columns, rows }) {
 		return <div className="empty-box">This view returned no rows.</div>;
 	}
 
+	const numericColumns = new Set(
+		columns.filter((column) =>
+			rows.some((row) => typeof row[column] === "number" || (
+				typeof row[column] === "string" &&
+				row[column].trim() !== "" &&
+				Number.isFinite(Number(row[column]))
+			)),
+		),
+	);
+
 	return (
 		<div className="table-wrap">
 			<table>
 				<thead>
 					<tr>
 						{columns.map((column) => (
-							<th key={column}>{column}</th>
+							<th className={numericColumns.has(column) ? "numeric-cell" : ""} key={column}>
+								{formatParameterLabel(column.replace(".", "_"))}
+							</th>
 						))}
 					</tr>
 				</thead>
@@ -102,7 +523,12 @@ function ResultsTable({ columns, rows }) {
 					{rows.map((row, rowIndex) => (
 						<tr key={`${rowIndex}-${JSON.stringify(row)}`}>
 							{columns.map((column) => (
-								<td key={`${rowIndex}-${column}`}>{formatValue(row[column])}</td>
+								<td
+									className={numericColumns.has(column) ? "numeric-cell" : ""}
+									key={`${rowIndex}-${column}`}
+								>
+									{formatValue(row[column])}
+								</td>
 							))}
 						</tr>
 					))}
@@ -124,6 +550,18 @@ function App() {
 	const [bootstrapping, setBootstrapping] = useState(true);
 	const [parsing, setParsing] = useState(false);
 	const [running, setRunning] = useState(false);
+	const [exporting, setExporting] = useState("");
+	const [parameterValues, setParameterValues] = useState({});
+	const [joinTypes, setJoinTypes] = useState([]);
+	const [groupBy, setGroupBy] = useState([]);
+	const [measures, setMeasures] = useState([]);
+	const [having, setHaving] = useState([]);
+	const [sortKey, setSortKey] = useState("");
+	const [sortDirection, setSortDirection] = useState("asc");
+	const [pageSize, setPageSize] = useState(10);
+	const [page, setPage] = useState(1);
+	const [lastQuery, setLastQuery] = useState(null);
+	const [setupTab, setSetupTab] = useState("query");
 
 	useEffect(() => {
 		void loadBootstrap();
@@ -132,6 +570,57 @@ function App() {
 	const activeView = useMemo(() => {
 		return summary?.views.find((view) => view.name === selectedView) ?? null;
 	}, [selectedView, summary]);
+
+	const parameterSignature = (activeView?.parameters ?? [])
+		.map((param) => `${param.name}:${param.type}:${param.default ?? ""}`)
+		.join("|");
+
+	const joinSignature = (activeView?.relationshipRefs ?? [])
+		.map((ref) => `${ref.name}:${ref.type}`)
+		.join("|");
+
+	useEffect(() => {
+		const next = {};
+		for (const param of activeView?.parameters ?? []) {
+			next[param.name] = param.default ?? "";
+		}
+		setParameterValues(next);
+	}, [selectedView, parameterSignature]);
+
+	const shapeSignature = [
+		...(activeView?.groupBy ?? []).map((item) => `${item.entity}.${item.attribute}`),
+		...(activeView?.measures ?? []).map((item) => `${item.fn}:${item.alias}:${item.entity ?? ""}.${item.attribute ?? ""}`),
+		...(activeView?.having ?? []).map((item) => `${item.alias}:${item.operator}:${item.value ?? ""}`),
+		...(activeView?.orderBy ?? []).map((item) => `${item.alias ?? ""}.${item.entity ?? ""}.${item.attribute ?? ""}:${item.direction}`),
+		activeView?.limit ?? "",
+	].join("|");
+
+	useEffect(() => {
+		setJoinTypes((activeView?.relationshipRefs ?? []).map((ref) => ref.type || "INNER"));
+	}, [selectedView, joinSignature]);
+
+	useEffect(() => {
+		const firstSort = activeView?.orderBy?.[0];
+		setGroupBy(activeView?.groupBy ?? []);
+		setMeasures(activeView?.measures ?? []);
+		setHaving(
+			(activeView?.having ?? []).map((item) => ({
+				alias: item.alias,
+				operator: item.operator || ">",
+				value: item.value ?? "",
+			})),
+		);
+		if (firstSort?.alias) {
+			setSortKey(`alias:${firstSort.alias}`);
+		} else if (firstSort?.attribute) {
+			setSortKey(`${firstSort.entity}.${firstSort.attribute}`);
+		} else {
+			setSortKey("");
+		}
+		setSortDirection(firstSort?.direction || "asc");
+		setPageSize(activeView?.limit ?? 10);
+		setPage(1);
+	}, [selectedView, shapeSignature]);
 
 	async function loadBootstrap() {
 		setBootstrapping(true);
@@ -195,11 +684,47 @@ function App() {
 		}
 	}
 
-	async function runQuery() {
+	function buildOrderBy() {
+		if (!sortKey) {
+			return [];
+		}
+
+		if (sortKey.startsWith("alias:")) {
+			return [{ alias: sortKey.slice("alias:".length), direction: sortDirection }];
+		}
+
+		const field = projectionFields(activeView).find((item) => item.key === sortKey);
+		if (!field) {
+			return [];
+		}
+
+		return [{ entity: field.entity, attribute: field.attribute, direction: sortDirection }];
+	}
+
+	async function runQuery(nextPage = page) {
+		const requestedPage = typeof nextPage === "number" ? nextPage : page;
 		if (!selectedView) {
 			setError("Pick a logical view before running the query.");
 			return;
 		}
+
+		const requestBody = {
+			metaschemaXml,
+			viewsXml,
+			viewName: selectedView,
+			parameters: parameterValues,
+			joinTypes: (activeView?.relationshipRefs ?? []).map(
+				(ref, index) => joinTypes[index] || ref.type || "INNER",
+			),
+			groupBy,
+			measures: groupBy.length ? measures : [],
+			having: groupBy.length
+				? having.filter((item) => item.alias && String(item.value ?? "").trim() !== "")
+				: [],
+			orderBy: buildOrderBy(),
+			limit: pageSize || null,
+			offset: pageSize ? (requestedPage - 1) * pageSize : 0,
+		};
 
 		setRunning(true);
 		setError("");
@@ -210,11 +735,7 @@ function App() {
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({
-					metaschemaXml,
-					viewsXml,
-					viewName: selectedView,
-				}),
+				body: JSON.stringify(requestBody),
 			});
 			const payload = await response.json();
 
@@ -223,10 +744,63 @@ function App() {
 			}
 
 			setResult(payload);
+			setLastQuery(requestBody);
 		} catch (err) {
 			setError(err.message);
 		} finally {
 			setRunning(false);
+		}
+	}
+
+	function forgetAlias(alias) {
+		setHaving((current) => current.filter((item) => item.alias !== alias));
+		setSortKey((current) => (current === `alias:${alias}` ? "" : current));
+	}
+
+	function updateMeasure(index, patch) {
+		setPage(1);
+		setMeasures((current) => current.map((measure, itemIndex) => (
+			itemIndex === index ? { ...measure, ...patch } : measure
+		)));
+	}
+
+	async function downloadExport(format) {
+		if (!lastQuery) {
+			return;
+		}
+
+		setExporting(format);
+		setError("");
+
+		try {
+			const response = await fetch("/api/execute", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					...lastQuery,
+					format,
+					limit: null,
+					offset: 0,
+				}),
+			});
+
+			if (!response.ok) {
+				const payload = await response.json();
+				throw new Error(formatApiError(payload));
+			}
+
+			const blob = await response.blob();
+			const filename = filenameFromDisposition(
+				response.headers.get("Content-Disposition"),
+				`${lastQuery.viewName}.${format === "xlsx" ? "xlsx" : format === "csv" ? "csv" : "json"}`,
+			);
+			downloadBlob(filename, blob);
+		} catch (err) {
+			setError(err.message);
+		} finally {
+			setExporting("");
 		}
 	}
 
@@ -244,6 +818,29 @@ function App() {
 
 	const showTable = outputMode === "split" || outputMode === "table";
 	const showJson = outputMode === "split" || outputMode === "json";
+	const selectionSummary = querySummary({
+		view: activeView,
+		parameterValues,
+		joinTypes,
+		groupBy,
+		measures,
+		having,
+		sortKey,
+		sortDirection,
+		pageSize,
+	});
+	const queryPlan = buildSqlPreview({
+		view: activeView,
+		summary,
+		parameterValues,
+		joinTypes,
+		groupBy,
+		measures,
+		having,
+		sortKey,
+		sortDirection,
+		pageSize,
+	});
 
 	return (
 		<div className="app-shell">
@@ -251,10 +848,13 @@ function App() {
 				<header className="hero">
 					<div className="hero-copy">
 						<p className="label">XDM Views</p>
-						<h1>Simple query workbench for metaschema, views, and output.</h1>
+						<h1>Federated views across relational and XML data.</h1>
 						<p className="hero-text">
-							Edit or upload XML, refresh the logical view list, then run the query engine and
-							inspect the joined output.
+							Define metadata and logical views in XML, inspect how they are interpreted,
+							then query, transform, and export the federated result.
+						</p>
+						<p className="byline">
+							Made by Devanshi Bavaria (MT2025041) and Parag Katoch (MT2025082)
 						</p>
 					</div>
 
@@ -266,12 +866,34 @@ function App() {
 					</div>
 				</header>
 
+				<nav className="workflow-strip" aria-label="Project workflow">
+					{[
+						["definitions", "1", "MetaSchema + View XML"],
+						["select", "2", "Choose the query"],
+						["summary", "3", "Summary and SQL"],
+						["results", "4", "Results + export"],
+					].map(([id, number, label]) => (
+						<button
+							key={id}
+							type="button"
+							className="workflow-step"
+							onClick={() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+						>
+							<strong>{number}</strong>
+							{label}
+						</button>
+					))}
+				</nav>
+
 				<main className="layout">
-					<section className="panel">
+					<section className="panel" id="definitions">
 						<div className="section-header">
 							<div>
-								<p className="label">Definitions</p>
-								<h2>Work with XML safely</h2>
+								<p className="label">Step 1 · Definitions</p>
+								<h2>Define the sources and logical views</h2>
+								<p className="section-description">
+									These XML documents are the project inputs. Edit them directly or upload replacements.
+								</p>
 							</div>
 							<div className="button-row">
 								<button className="button button--secondary" onClick={loadBootstrap}>
@@ -286,14 +908,16 @@ function App() {
 						<div className="editor-grid">
 							<EditorPanel
 								title="Metaschema"
-								hint="Schema definition"
+								hint="Physical and logical schema"
+								description="Databases, entities, attributes, paths, keys, and relationships."
 								value={metaschemaXml}
 								onChange={setMetaschemaXml}
 								onFilePick={(event) => handleXmlUpload(event, setMetaschemaXml)}
 							/>
 							<EditorPanel
 								title="Views"
-								hint="Logical views"
+								hint="Federated view definitions"
+								description="Projection, filters, parameters, joins, aggregation, sorting, and pagination."
 								value={viewsXml}
 								onChange={setViewsXml}
 								onFilePick={(event) => handleXmlUpload(event, setViewsXml)}
@@ -301,17 +925,41 @@ function App() {
 						</div>
 					</section>
 
-					<section className="panel">
-						<div className="section-header">
+					<section className="panel" id="select">
+						<div className="section-header section-header--compact">
 							<div>
-								<p className="label">Runner</p>
-								<h2>Choose a view and output mode</h2>
+								<p className="label">Step 2 · Choose the query</p>
+								<h2>Select what you want to run</h2>
+								<p className="section-description">
+									Pick a view, then set its parameters, joins, grouping, and page size. The metadata below shows how that view is defined.
+								</p>
 							</div>
-							<button className="button" onClick={runQuery} disabled={running || bootstrapping}>
-								{running ? "Running..." : "Run view"}
+						</div>
+
+						<div className="setup-tabs" role="tablist" aria-label="Query configuration">
+							<button
+								type="button"
+								role="tab"
+								aria-selected={setupTab === "query"}
+								className={setupTab === "query" ? "setup-tab setup-tab--active" : "setup-tab"}
+								onClick={() => setSetupTab("query")}
+							>
+								Query setup
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={setupTab === "transform"}
+								className={setupTab === "transform" ? "setup-tab setup-tab--active" : "setup-tab"}
+								onClick={() => setSetupTab("transform")}
+							>
+								Transform result
 							</button>
 						</div>
 
+						{setupTab === "query" ? (
+						<div className="runner-section">
+							<p className="section-description">Select the logical view, parameters, and relationship behavior.</p>
 						<div className="controls-grid">
 							<label className="field">
 								<span>View</span>
@@ -340,23 +988,367 @@ function App() {
 							</label>
 						</div>
 
-						<div className="runner-grid">
-							{/* <div className="info-card">
-                <p className="label">Active view</p>
-                <h3>{activeView?.name ?? "No view selected"}</h3>
-                <p className="muted-text">
-                  {bootstrapping
-                    ? "Loading bundled definitions..."
-                    : "Refresh definitions after editing XML to update this view list."}
-                </p>
-              </div> */}
+						{(activeView?.parameters ?? []).length ? (
+							<div className="parameter-panel">
+								<p className="label">Parameters</p>
+								<div className="parameter-grid">
+									{activeView.parameters.map((param) => (
+										<label className="field" key={param.name}>
+											<span className="field-label">{formatParameterLabel(param.name)}</span>
+											<span className="field-hint">{formatParameterHint(param)}</span>
+											<input
+												type={param.type === "string" ? "text" : "number"}
+												step={param.type === "float" ? "any" : "1"}
+												value={parameterValues[param.name] ?? ""}
+												onChange={(event) =>
+													setParameterValues((current) => ({
+														...current,
+														[param.name]: event.target.value,
+													}))
+												}
+											/>
+										</label>
+									))}
+								</div>
+							</div>
+						) : null}
 
-							<div className="info-card">
-								<p className="label">Available views</p>
-								<InfoList
-									items={summary?.viewNames ?? []}
-									emptyText="No views are currently available."
-								/>
+						<div className="join-config">
+							<p className="label">Join behavior</p>
+							{(activeView?.relationshipRefs ?? []).length ? (
+								<div className="join-grid">
+									{activeView.relationshipRefs.map((ref, index) => {
+										const selectedType = joinTypes[index] || ref.type || "INNER";
+										return (
+											<label className="field" key={`${ref.name}-${index}`}>
+												<span className="field-label">{ref.name}</span>
+												<span className="field-hint">{joinDescription(selectedType)}</span>
+												<select
+													value={selectedType}
+													onChange={(event) => {
+														const value = event.target.value;
+														setJoinTypes((current) => {
+															const next = [...current];
+															next[index] = value;
+															return next;
+														});
+													}}
+												>
+													{JOIN_OPTIONS.map((option) => (
+														<option key={option.value} value={option.value}>
+															{option.label}{option.value === "FULL" ? " outer" : ""}
+														</option>
+													))}
+												</select>
+											</label>
+										);
+									})}
+								</div>
+							) : (
+								<p className="muted-text">This view has no join to configure.</p>
+							)}
+						</div>
+						</div>
+						) : (
+						<div className="runner-section">
+							<p className="section-description">Group, calculate, filter aggregated rows, sort, and choose the page size.</p>
+						<div className="parameter-panel">
+							<p className="label">Group, sort, and page</p>
+							<div className="parameter-grid">
+								<label className="field">
+									<span className="field-label">Group by</span>
+									<select
+										value={groupBy[0] ? `${groupBy[0].entity}.${groupBy[0].attribute}` : ""}
+										onChange={(event) => {
+											const key = event.target.value;
+											setPage(1);
+											if (!key) {
+												setGroupBy([]);
+												setMeasures([]);
+												setHaving([]);
+												setSortKey((current) => (current.startsWith("alias:") ? "" : current));
+												return;
+											}
+											const field = projectionFields(activeView).find((item) => item.key === key);
+											if (!field) {
+												return;
+											}
+											setSortKey((current) => {
+												if (!current || current.startsWith("alias:") || current === key) {
+													return current;
+												}
+												return "";
+											});
+											setGroupBy([{ entity: field.entity, attribute: field.attribute }]);
+											setMeasures((current) =>
+												current.length ? current : [{ fn: "count", alias: "row_count" }],
+											);
+										}}
+									>
+										<option value="">No grouping</option>
+										{projectionFields(activeView).map((field) => (
+											<option key={field.key} value={field.key}>
+												{field.label}
+											</option>
+										))}
+									</select>
+								</label>
+
+								<label className="field">
+									<span className="field-label">Sort by</span>
+									<select
+										value={sortKey}
+										onChange={(event) => {
+											setSortKey(event.target.value);
+											setPage(1);
+										}}
+									>
+										<option value="">Unsorted</option>
+										{(groupBy.length
+											? projectionFields(activeView).filter((field) =>
+													groupBy.some(
+														(item) =>
+															item.entity === field.entity && item.attribute === field.attribute,
+													),
+												)
+											: projectionFields(activeView)
+										).map((field) => (
+											<option key={field.key} value={field.key}>
+												{field.label}
+											</option>
+										))}
+										{measures.map((measure) => (
+											<option key={`alias:${measure.alias}`} value={`alias:${measure.alias}`}>
+												{formatParameterLabel(measure.alias)}
+											</option>
+										))}
+									</select>
+								</label>
+
+								<label className="field">
+									<span className="field-label">Direction</span>
+									<select
+										value={sortDirection}
+										disabled={!sortKey}
+										onChange={(event) => {
+											setSortDirection(event.target.value);
+											setPage(1);
+										}}
+									>
+										<option value="asc">Ascending</option>
+										<option value="desc">Descending</option>
+									</select>
+								</label>
+
+								<label className="field">
+									<span className="field-label">Rows per page</span>
+									<select
+										value={String(pageSize)}
+										onChange={(event) => {
+											setPageSize(Number(event.target.value));
+											setPage(1);
+										}}
+									>
+										{PAGE_SIZE_OPTIONS.map((option) => (
+											<option key={option.value} value={option.value}>
+												{option.label}
+											</option>
+										))}
+									</select>
+								</label>
+							</div>
+
+							<div className="shape-section">
+								<p className="label">Measures</p>
+								{groupBy.length ? measures.map((measure, index) => (
+									<div className="shape-row" key={`${measure.alias}-${index}`}>
+										<label className="field">
+											<span className="field-label">Function</span>
+											<select
+												value={measure.fn}
+												onChange={(event) => {
+													const fn = event.target.value;
+													if (fn !== "count" && !measure.attribute) {
+														const field = projectionFields(activeView)[0];
+														updateMeasure(index, field
+															? { fn, entity: field.entity, attribute: field.attribute }
+															: { fn });
+														return;
+													}
+													updateMeasure(index, { fn });
+												}}
+											>
+												{MEASURE_OPTIONS.map((option) => (
+													<option key={option.value} value={option.value}>
+														{option.label}
+													</option>
+												))}
+											</select>
+										</label>
+										<label className="field">
+											<span className="field-label">Field</span>
+											<select
+												value={measure.attribute ? `${measure.entity}.${measure.attribute}` : ""}
+												onChange={(event) => {
+													const key = event.target.value;
+													if (!key) {
+														updateMeasure(index, { entity: undefined, attribute: undefined });
+														return;
+													}
+													const field = projectionFields(activeView).find((item) => item.key === key);
+													if (!field) {
+														return;
+													}
+													updateMeasure(index, {
+														entity: field.entity,
+														attribute: field.attribute,
+													});
+												}}
+											>
+												<option value="">All rows</option>
+												{projectionFields(activeView).map((field) => (
+													<option key={field.key} value={field.key}>
+														{field.label}
+													</option>
+												))}
+											</select>
+										</label>
+										<span className="field-hint">as {formatParameterLabel(measure.alias)}</span>
+										<button
+											type="button"
+											className="button button--secondary button--small"
+											onClick={() => {
+												setPage(1);
+												setMeasures((current) => current.filter((_, itemIndex) => itemIndex !== index));
+												forgetAlias(measure.alias);
+											}}
+											disabled={measures.length < 2}
+										>
+											Remove
+										</button>
+									</div>
+								)) : (
+									<p className="field-hint">No grouping. Sort and page apply to the joined rows.</p>
+								)}
+								<button
+									type="button"
+									className="button button--secondary button--small"
+									disabled={!groupBy.length}
+									onClick={() => {
+										setPage(1);
+										setMeasures((current) => [
+											...current,
+											{
+												fn: "count",
+												alias: aliasForMeasure("count", "", current.map((item) => item.alias)),
+											},
+										]);
+									}}
+								>
+									Add measure
+								</button>
+							</div>
+
+							<div className="shape-section">
+								<p className="label">Filter aggregated results</p>
+								{having.map((condition, index) => (
+									<div className="shape-row" key={`${condition.alias}-${index}`}>
+										<label className="field">
+											<span className="field-label">Measure</span>
+											<select
+												value={condition.alias}
+												onChange={(event) => {
+													const alias = event.target.value;
+													setHaving((current) => current.map((item, itemIndex) => (
+														itemIndex === index ? { ...item, alias } : item
+													)));
+													setPage(1);
+												}}
+											>
+												{measures.map((measure) => (
+													<option key={measure.alias} value={measure.alias}>
+														{formatParameterLabel(measure.alias)}
+													</option>
+												))}
+											</select>
+										</label>
+										<label className="field field--narrow">
+											<span className="field-label">Operator</span>
+											<select
+												value={condition.operator}
+												onChange={(event) => {
+													const operator = event.target.value;
+													setHaving((current) => current.map((item, itemIndex) => (
+														itemIndex === index ? { ...item, operator } : item
+													)));
+													setPage(1);
+												}}
+											>
+												{HAVING_OPERATORS.map((operator) => (
+													<option key={operator} value={operator}>
+														{operator}
+													</option>
+												))}
+											</select>
+										</label>
+										<label className="field">
+											<span className="field-label">Value</span>
+											<input
+												type="text"
+												value={condition.value}
+												placeholder="0 or $min_orders"
+												onChange={(event) => {
+													const value = event.target.value;
+													setHaving((current) => current.map((item, itemIndex) => (
+														itemIndex === index ? { ...item, value } : item
+													)));
+													setPage(1);
+												}}
+											/>
+										</label>
+										<button
+											type="button"
+											className="button button--secondary button--small"
+											onClick={() => {
+												setPage(1);
+												setHaving((current) => current.filter((_, itemIndex) => itemIndex !== index));
+											}}
+										>
+											Remove
+										</button>
+									</div>
+								))}
+								<button
+									type="button"
+									className="button button--secondary button--small"
+									disabled={!measures.length}
+									onClick={() => {
+										const alias = measures[0]?.alias;
+										if (!alias) {
+											return;
+										}
+										setPage(1);
+										setHaving((current) => [...current, { alias, operator: ">", value: "" }]);
+									}}
+								>
+									Add condition
+								</button>
+							</div>
+						</div>
+						</div>
+						)}
+
+						<details className="metadata-disclosure">
+						<summary className="label metadata-follow">Interpreted from the XML</summary>
+
+						<div className="metadata-banner">
+							<div>
+								<span>Selected view</span>
+								<strong>{activeView?.name ?? "No view selected"}</strong>
+							</div>
+							<div>
+								<span>Execution path</span>
+								<strong>{(activeView?.baseEntities ?? []).map(formatEntityName).join(" → ") || "—"}</strong>
 							</div>
 						</div>
 
@@ -364,27 +1356,20 @@ function App() {
 							<div className="info-card">
 								<p className="label">Base entities</p>
 								<InfoList
-									items={activeView?.baseEntities ?? []}
+									items={(activeView?.baseEntities ?? []).map(formatEntityName)}
 									emptyText="Pick a view to inspect its entities."
 								/>
 							</div>
 
 							<div className="info-card">
-								<p className="label">Filters</p>
-								<InfoList
-									items={(activeView?.filters ?? []).map((filter) => formatFilter(filter))}
-									emptyText="No filters defined for this view."
-								/>
-							</div>
-
-							<div className="info-card">
 								<p className="label">Projection</p>
-								<InfoList
-									items={
+								<DetailGroups
+									groups={
 										activeView
-											? Object.entries(activeView.projection).map(
-													([entity, attrs]) => `${entity}: ${attrs.join(", ")}`,
-												)
+											? Object.entries(activeView.projection).map(([entity, attrs]) => ({
+													title: formatEntityName(entity),
+													items: attrs.map(formatParameterLabel),
+												}))
 											: []
 									}
 									emptyText="No projection details available."
@@ -394,7 +1379,7 @@ function App() {
 
 						<div className="source-card">
 							<div>
-								<p className="label">SQL source</p>
+								<p className="label">Relational source</p>
 								<code>{dataSources?.relationalSource ?? "Loading..."}</code>
 							</div>
 							<div>
@@ -402,18 +1387,93 @@ function App() {
 								<code>{dataSources?.xmlPath ?? "Loading..."}</code>
 							</div>
 						</div>
+						</details>
 					</section>
 
-					<section className="panel">
+					<section className="panel" id="summary">
 						<div className="section-header">
 							<div>
-								<p className="label">Results</p>
-								<h2>Query output</h2>
+								<p className="label">Step 3 · Summary and SQL</p>
+								<h2>Review the query before it runs</h2>
+								<p className="section-description">
+									This is the selection from step 2, written as a short description and as SQL. XML sources are still read with XPath; the logical SQL shows the same view as one statement.
+								</p>
+							</div>
+							<button className="button" onClick={runQuery} disabled={running || bootstrapping || !selectedView}>
+								{running ? "Running..." : "Run query"}
+							</button>
+						</div>
+						<div className="query-summary">
+							<span>What will run</span>
+							<p>{selectionSummary}</p>
+						</div>
+						<div className="sql-panel">
+							<p className="label">Logical SQL</p>
+							<pre className="sql-block">{queryPlan.logicalSql}</pre>
+						</div>
+						<div className="source-query-list">
+							{queryPlan.sourceQueries.map((query) => (
+								<div className="sql-panel" key={query.entity}>
+									<p className="label">{query.language} · {query.entity}</p>
+									<pre className="sql-block">{query.text}</pre>
+								</div>
+							))}
+						</div>
+					</section>
+
+					<section className="panel" id="results">
+						<div className="section-header">
+							<div>
+								<p className="label">Step 4 · Results and export</p>
+								<h2>Review the federated output</h2>
 							</div>
 							<div className="result-summary">
-								<span>{result ? `${result.rowCount} row(s)` : "No run yet"}</span>
+								<span>{pageLabel(result)}</span>
 								<span>{result ? `${result.elapsedMs} ms` : "Waiting"}</span>
+								{result?.limit ? (
+									<>
+										<button
+											className="button button--secondary button--small"
+											onClick={() => {
+												const next = Math.max(1, page - 1);
+												setPage(next);
+												runQuery(next);
+											}}
+											disabled={running || page <= 1}
+										>
+											Previous
+										</button>
+										<button
+											className="button button--secondary button--small"
+											onClick={() => {
+												const next = page + 1;
+												setPage(next);
+												runQuery(next);
+											}}
+											disabled={
+												running ||
+												(result.offset ?? 0) + result.rowCount >= (result.totalCount ?? result.rowCount)
+											}
+										>
+											Next
+										</button>
+									</>
+								) : null}
 							</div>
+						</div>
+
+						<div className="download-row">
+							<span className="label">Download</span>
+							{EXPORT_OPTIONS.map((option) => (
+								<button
+									key={option.format}
+									className="button button--secondary button--small"
+									onClick={() => downloadExport(option.format)}
+									disabled={!lastQuery || Boolean(exporting)}
+								>
+									{exporting === option.format ? "Preparing..." : option.label}
+								</button>
+							))}
 						</div>
 
 						{error ? <pre className="error-box">{error}</pre> : null}
@@ -440,7 +1500,7 @@ function App() {
 											<h3>JSON</h3>
 											<span>Raw response</span>
 										</div>
-										<pre className="json-block">{JSON.stringify(result, null, 2)}</pre>
+										<pre className="json-block">{JSON.stringify(responseForDisplay(result), null, 2)}</pre>
 									</section>
 								) : null}
 							</div>
