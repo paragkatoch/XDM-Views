@@ -1,6 +1,6 @@
 <Views>
     <!-- Customers with purchase amount > 10k -->
-    <View name="HighValueCustomers (amount > 10000)">
+    <View name="High value customers">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -23,17 +23,21 @@
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
 
+        <Parameters>
+            <Parameter name="min_amount" type="int" default="10000"/>
+        </Parameters>
+
         <Filters>
             <Filter>
                 <Entity>PurchaseOrder</Entity>
-                <Query>/PurchaseOrders/PurchaseOrder [amount > 10000]</Query>
+                <Query>/PurchaseOrders/PurchaseOrder [amount > $min_amount]</Query>
             </Filter>
         </Filters>
     </View>
 
 
     <!-- Customer having purchase item = laptop -->
-    <View name="CustomersByItem (purchase item = laptop)">
+    <View name="Customers by item">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -56,17 +60,21 @@
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
 
+        <Parameters>
+            <Parameter name="item_name" type="string" default="Laptop"/>
+        </Parameters>
+
         <Filters>
             <Filter>
                 <Entity>PurchaseOrder</Entity>
-                <Query>/PurchaseOrders/PurchaseOrder [item/item_name = Laptop]</Query>
+                <Query>/PurchaseOrders/PurchaseOrder [item/item_name = $item_name]</Query>
             </Filter>
         </Filters>
     </View>
 
 
     <!-- Purchases done by a customer 5 -->
-    <View name="CustomerPurchases (customer id = 5)">
+    <View name="Purchases by customer">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -89,13 +97,17 @@
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
 
+        <Parameters>
+            <Parameter name="customer_id" type="int" default="5"/>
+        </Parameters>
+
         <Filter>
             <Entity>PurchaseOrder</Entity>
-            <Query>/PurchaseOrders/PurchaseOrder [customer_id = 5]</Query>
+            <Query>/PurchaseOrders/PurchaseOrder [customer_id = $customer_id]</Query>
         </Filter>
     </View>
     <!-- Purchases done by customers in New York -->
-    <View name="Purchases of New York">
+    <View name="Purchases by city">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -117,18 +129,22 @@
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
 
+        <Parameters>
+            <Parameter name="city" type="string" default="New York"/>
+        </Parameters>
+
         <Filters>
             <Filter>
                 <Entity>Customer</Entity>
                 <Attribute>city</Attribute>
                 <Operator>=</Operator>
-                <Value>New York</Value>
+                <Value>$city</Value>
             </Filter>
         </Filters>
     </View>
 
     <!-- CASE 3: Both SQL and XML filters - High value purchases from New York -->
-    <View name="HighValueNYOrders (NY &amp;&amp; &gt;5000)">
+    <View name="High value orders by city">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -151,17 +167,22 @@
 
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
 
+        <Parameters>
+            <Parameter name="city" type="string" default="New York"/>
+            <Parameter name="min_amount" type="int" default="5000"/>
+        </Parameters>
+
         <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
         <Filters>
             <Filter>
                 <Entity>Customer</Entity>
                 <Attribute>city</Attribute>
                 <Operator>=</Operator>
-                <Value>New York</Value>
+                <Value>$city</Value>
             </Filter>
             <Filter>
                 <Entity>PurchaseOrder</Entity>
-                <Query>/PurchaseOrders/PurchaseOrder [amount > 5000]</Query>
+                <Query>/PurchaseOrders/PurchaseOrder [amount > $min_amount]</Query>
             </Filter>
         </Filters>
 
@@ -208,7 +229,7 @@
 
 
 
-    <View name="Customers with reward_points > 4000">
+    <View name="Customers by reward points">
         <Projection>
             <Entity name="Customer">
                 <Attribute>customer_id</Attribute>
@@ -241,19 +262,22 @@
         <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
         <RelationshipRef>CustomerLoyaltyJoin</RelationshipRef>
 
-        <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
+        <Parameters>
+            <Parameter name="min_points" type="int" default="4000"/>
+        </Parameters>
+
         <Filters>
             <Filter>
                 <Entity>CustomerLoyalty</Entity>
                 <Attribute>reward_points</Attribute>
                 <Operator>></Operator>
-                <Value>4000</Value>
+                <Value>$min_points</Value>
             </Filter>
         </Filters>
     </View>
 
 
-    <View name="Order from customers with gold membership">
+    <View name="Orders by membership tier">
         <Projection>
             <Entity name="PurchaseOrder">
                 <Attribute>order_id</Attribute>
@@ -278,16 +302,152 @@
 
         <RelationshipRef>PurchaseOrderLoyaltyJoin</RelationshipRef>
 
+        <Parameters>
+            <Parameter name="membership_tier" type="string" default="Gold"/>
+        </Parameters>
 
-        <!-- Both SQL filter on Customer AND XML filter on PurchaseOrder -->
         <Filters>
             <Filter>
                 <Entity>CustomerLoyalty</Entity>
                 <Attribute>membership_tier</Attribute>
                 <Operator>=</Operator>
-                <Value>Gold</Value>
+                <Value>$membership_tier</Value>
             </Filter>
         </Filters>
+    </View>
+
+    <View name="Customers with loyalty">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+            <Entity name="CustomerLoyalty">
+                <Attribute>customer_id</Attribute>
+                <Attribute>membership_tier</Attribute>
+                <Attribute>reward_points</Attribute>
+            </Entity>
+        </Projection>
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>CustomerLoyalty</Entity>
+        </BaseEntities>
+        <RelationshipRef type="LEFT">CustomerLoyaltyJoin</RelationshipRef>
+    </View>
+
+    <View name="Loyalty records and customers">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+            <Entity name="CustomerLoyalty">
+                <Attribute>customer_id</Attribute>
+                <Attribute>membership_tier</Attribute>
+                <Attribute>reward_points</Attribute>
+            </Entity>
+        </Projection>
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>CustomerLoyalty</Entity>
+        </BaseEntities>
+        <RelationshipRef type="RIGHT">CustomerLoyaltyJoin</RelationshipRef>
+    </View>
+
+    <View name="Customers who have loyalty">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+            <Entity name="CustomerLoyalty">
+                <Attribute>membership_tier</Attribute>
+            </Entity>
+        </Projection>
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>CustomerLoyalty</Entity>
+        </BaseEntities>
+        <RelationshipRef type="SEMI">CustomerLoyaltyJoin</RelationshipRef>
+    </View>
+
+    <View name="Customers without loyalty">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+            <Entity name="CustomerLoyalty">
+                <Attribute>membership_tier</Attribute>
+            </Entity>
+        </Projection>
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>CustomerLoyalty</Entity>
+        </BaseEntities>
+        <RelationshipRef type="ANTI">CustomerLoyaltyJoin</RelationshipRef>
+    </View>
+
+    <View name="Customers and loyalty records">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+            <Entity name="CustomerLoyalty">
+                <Attribute>customer_id</Attribute>
+                <Attribute>membership_tier</Attribute>
+                <Attribute>reward_points</Attribute>
+            </Entity>
+        </Projection>
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>CustomerLoyalty</Entity>
+        </BaseEntities>
+        <RelationshipRef type="FULL">CustomerLoyaltyJoin</RelationshipRef>
+    </View>
+
+    <View name="Orders by city">
+        <Projection>
+            <Entity name="Customer">
+                <Attribute>customer_id</Attribute>
+                <Attribute>name</Attribute>
+                <Attribute>city</Attribute>
+            </Entity>
+            <Entity name="PurchaseOrder">
+                <Attribute>order_id</Attribute>
+                <Attribute>amount</Attribute>
+            </Entity>
+        </Projection>
+        <BaseEntities>
+            <Entity>Customer</Entity>
+            <Entity>PurchaseOrder</Entity>
+        </BaseEntities>
+        <RelationshipRef>CustomerPurchaseJoin</RelationshipRef>
+        <Parameters>
+            <Parameter name="min_orders" type="int" default="0"/>
+        </Parameters>
+        <Aggregation>
+            <GroupBy>
+                <Attribute entity="Customer">city</Attribute>
+            </GroupBy>
+            <Measures>
+                <Measure fn="count" alias="order_count"/>
+                <Measure fn="sum" entity="PurchaseOrder" attribute="amount" alias="total_amount"/>
+            </Measures>
+            <Having>
+                <Filter alias="order_count" operator=">" value="$min_orders"/>
+            </Having>
+        </Aggregation>
+        <OrderBy>
+            <Sort alias="total_amount" direction="desc"/>
+        </OrderBy>
+        <Limit>5</Limit>
     </View>
 
 
