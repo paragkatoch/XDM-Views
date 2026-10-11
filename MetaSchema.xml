@@ -6,11 +6,13 @@
     <Database id="DB1">
       <Name>CustomerDB</Name>
       <Type>Relational</Type>
+      <Connection url="sqlite:///dummy_data/customers.db"/>
     </Database>
 
     <Database id="DB2">
       <Name>PurchaseOrderDB</Name>
       <Type>XML</Type>
+      <Connection path="dummy_data/purchaseorders.xml"/>
     </Database>
   </Databases>
 

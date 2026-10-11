@@ -6,11 +6,12 @@ Executes federated queries across relational (SQL) and XML databases using XPath
 import re
 import time
 import xml.etree.ElementTree as ET
-import sqlite3
 import os
 from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 from dotenv import load_dotenv
+
+from sources import open_source
 
 load_dotenv()
 ENV_base_path = os.getenv("ENV_BASE_PATH")
@@ -48,10 +49,12 @@ class MetaSchemaLoader:
             type_elem = db_elem.find('Type')
             name = name_elem.text if name_elem is not None else None
             db_type = type_elem.text if type_elem is not None else None
+            connection_elem = db_elem.find('Connection')
             self.databases[db_id] = {
                 'id': db_id,
                 'name': name,
-                'type': db_type
+                'type': db_type,
+                'connection': dict(connection_elem.attrib) if connection_elem is not None else None,
             }
         
         # Parse entities
@@ -344,17 +347,26 @@ class ViewLoader:
 class QueryExecutor:
     """Executes federated queries across relational and XML databases"""
     
-    def __init__(self, metaschema: MetaSchemaLoader, views: ViewLoader, xml_path: str):
+    def __init__(self, metaschema: MetaSchemaLoader, views: ViewLoader, xml_path: str = None,
+                 sources: Dict[str, Any] = None):
+        """Sources are opened per <Database> on first use; pass `sources` to supply them directly.
+        `xml_path` is used only for XML databases without a <Connection path>."""
         self.metaschema = metaschema
         self.views = views
+        self.xml_path = xml_path
+        self.sources = dict(sources or {})
+        self._opened = []
 
-        self.xml_root = ET.parse(xml_path).getroot()
-        print(f"Loaded {self.xml_root.tag} xml database")
-
-        db_path = os.path.join(ENV_base_path, 'dummy_data', 'customers.db')
-        self.db_conn = sqlite3.connect(db_path)
-        self.db_cursor = self.db_conn.cursor()
-        print(f"Loaded SQLite database from {db_path}")
+    def _source(self, db_ref: str):
+        if db_ref not in self.sources:
+            database = self.metaschema.databases.get(db_ref)
+            if database is None:
+                raise ValueError(f"Database '{db_ref}' is not declared in the MetaSchema.")
+            source = open_source(database, self.xml_path)
+            print(f"Opened {source.label} for {database.get('name') or db_ref}")
+            self.sources[db_ref] = source
+            self._opened.append(source)
+        return self.sources[db_ref]
     
     def execute_view(self, view_name: str) -> List[Dict[str, Any]]:
         """
@@ -792,11 +804,8 @@ class QueryExecutor:
         db_info = self.metaschema.databases[db_ref]
 
         if db_info['type'] == 'Relational':
-            if entity_filter and entity_filter.attribute and entity_filter.operator:
-                return self._query_relational_with_sql_filter(
-                    entity_name, entity_meta, projected_attrs, entity_filter
-                )
-            return self._query_relational(entity_name, entity_meta, projected_attrs)
+            sql_filter = entity_filter if entity_filter and entity_filter.attribute and entity_filter.operator else None
+            return self._query_relational(entity_name, entity_meta, projected_attrs, sql_filter)
 
         if db_info['type'] == 'XML':
             xml_filter = self._xml_filter_for_query(entity_name, entity_meta, entity_filter)
@@ -808,64 +817,25 @@ class QueryExecutor:
 
         raise ValueError(f"Unsupported database type for entity {entity_name}: {db_info['type']}")
 
-    def _query_relational(self, entity_name: str, entity_meta: Dict, 
-                          projected_attrs: List[str]) -> List[Dict]:
-        """Execute unfiltered query on relational database"""
-        
-        # Determine which attributes to select
-        if projected_attrs:
-            select_attrs = projected_attrs
-        else:
-            select_attrs = list(entity_meta['attributes'].keys())
-        
-        # Build SQL query
-        select_clause = ', '.join(select_attrs)
-        from_clause = entity_name
-        
-        query = f"SELECT {select_clause} FROM {from_clause}"
-        
-        print(f"[SQL Query] {query}")
-        
-        # Execute and fetch results
-        self.db_cursor.execute(query)
-        columns = [desc[0] for desc in self.db_cursor.description]
-        rows = self.db_cursor.fetchall()
-        
-        return [dict(zip(columns, row)) for row in rows]
-    
-    def _query_relational_with_sql_filter(self, entity_name: str, entity_meta: Dict, 
-                                          projected_attrs: List[str], sql_filter: QueryFilter) -> List[Dict]:
-        """Execute SQL query with filter using attribute/operator/value"""
-        
-        # Determine which attributes to select
-        if projected_attrs:
-            select_attrs = projected_attrs
-        else:
-            select_attrs = list(entity_meta['attributes'].keys())
-        
-        # Build SQL query with WHERE clause
-        select_clause = ', '.join(select_attrs)
-        from_clause = entity_name
-        
-        # SQL filters use traditional attribute/operator/value format
-        where_clause = f"WHERE {sql_filter.attribute} {sql_filter.operator} '{sql_filter.value}'"
-        query = f"SELECT {select_clause} FROM {from_clause} {where_clause}"
-        
-        print(f"[SQL Query] {query}")
-        
-        # Execute and fetch results
-        self.db_cursor.execute(query)
-        columns = [desc[0] for desc in self.db_cursor.description]
-        rows = self.db_cursor.fetchall()
-        
-        return [dict(zip(columns, row)) for row in rows]
+    def _query_relational(self, entity_name: str, entity_meta: Dict,
+                          projected_attrs: List[str], sql_filter: QueryFilter = None) -> List[Dict]:
+        """Read a relational entity from its database, with an optional column filter."""
+        attributes = entity_meta['attributes']
+        select_attrs = projected_attrs or list(attributes.keys())
+        condition = None
+        if sql_filter is not None:
+            if sql_filter.attribute not in attributes:
+                raise ValueError(f"Filter column '{sql_filter.attribute}' is not an attribute of {entity_name}.")
+            condition = (sql_filter.attribute, sql_filter.operator, sql_filter.value)
+        source = self._source(entity_meta['database_ref'])
+        return source.select(entity_name, select_attrs, condition)
 
     def _select_xml_elements(self, entity_meta: Dict,
                              xml_filter: QueryFilter = None) -> List[ET.Element]:
         """Return XML elements for an entity, applying a bracket filter when present."""
         base_path = entity_meta['base_path'] or ""
         element_name = base_path.lstrip('/').split('/')[-1]
-        elements = self.xml_root.findall(element_name)
+        elements = self._source(entity_meta['database_ref']).root.findall(element_name)
         if not xml_filter or not xml_filter.query:
             return elements
         if '[' not in xml_filter.query or ']' not in xml_filter.query:
@@ -1306,8 +1276,10 @@ class QueryExecutor:
         return value
     
     def close(self):
-        """Close database connection"""
-        self.db_conn.close()
+        """Close the sources this executor opened."""
+        for source in self._opened:
+            source.close()
+        self._opened = []
 
 
 def print_results(view_name: str, results: list):
