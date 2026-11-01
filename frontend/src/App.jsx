@@ -1,4 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+	formatEntityName,
+	formatFilterCondition,
+	formatParameterHint,
+	formatParameterLabel,
+	orderRelationships,
+} from "./format";
+import { SchemaSection } from "./SchemaSection";
+import { ViewsSection } from "./ViewsSection";
+import { emptyView, withEntities } from "./viewEditing";
+import { removeViewXml, replaceViewBlock, replaceViewXml, viewNameFromXml, viewToXml } from "./viewDocument";
 
 const OUTPUT_OPTIONS = [
 	{ value: "split", label: "Table + JSON" },
@@ -12,35 +23,6 @@ const EXPORT_OPTIONS = [
 	{ format: "xlsx", label: "Excel" },
 	{ format: "native", label: "Native" },
 ];
-
-const PARAMETER_TYPE_LABELS = {
-	string: "Text",
-	int: "Whole number",
-	float: "Decimal",
-};
-
-function formatParameterLabel(name) {
-	const words = {
-		id: "ID",
-		min: "Minimum",
-		max: "Maximum",
-	};
-
-	return name
-		.split("_")
-		.filter(Boolean)
-		.map((word) => words[word] ?? word.charAt(0).toUpperCase() + word.slice(1))
-		.join(" ");
-}
-
-function formatParameterHint(param) {
-	const typeLabel = PARAMETER_TYPE_LABELS[param.type] ?? param.type;
-	if (param.default == null || param.default === "") {
-		return typeLabel;
-	}
-
-	return `${typeLabel} · Default ${param.default}`;
-}
 
 const MEASURE_OPTIONS = [
 	{ value: "count", label: "Count" },
@@ -86,18 +68,6 @@ function pageLabel(result) {
 	const start = (result.offset ?? 0) + 1;
 	const end = (result.offset ?? 0) + result.rowCount;
 	return `${start}–${end} of ${total}`;
-}
-
-function joinDescription(type) {
-	const descriptions = {
-		INNER: "Only rows that match on both sides",
-		LEFT: "Every left row, with matching right data",
-		RIGHT: "Every right row, with matching left data",
-		FULL: "Every row from both sides",
-		SEMI: "Left rows that have a match",
-		ANTI: "Left rows that do not have a match",
-	};
-	return descriptions[type] ?? "";
 }
 
 function sqlValue(raw) {
@@ -340,28 +310,6 @@ function aliasForMeasure(fn, attribute, used) {
 	return nextAlias(base, used);
 }
 
-const JOIN_OPTIONS = [
-	{ value: "INNER", label: "Inner" },
-	{ value: "LEFT", label: "Left" },
-	{ value: "RIGHT", label: "Right" },
-	{ value: "FULL", label: "Full" },
-	{ value: "SEMI", label: "Semi" },
-	{ value: "ANTI", label: "Anti" },
-];
-
-function formatEntityName(name) {
-	return name.replace(/([a-z])([A-Z])/g, "$1 $2");
-}
-
-function formatFilterCondition(filter) {
-	if (filter.query) {
-		const condition = filter.query.match(/\[([\s\S]+)\]/);
-		return condition ? condition[1].trim() : filter.query.trim();
-	}
-
-	return `${filter.attribute} ${filter.operator} ${filter.value}`;
-}
-
 function formatValue(value) {
 	if (value === null || value === undefined) {
 		return "—";
@@ -427,33 +375,6 @@ function Metric({ label, value }) {
 			<span>{label}</span>
 			<strong>{value}</strong>
 		</div>
-	);
-}
-
-function EditorPanel({ title, hint, description, value, onChange, onFilePick }) {
-	return (
-		<section className="editor-card">
-			<div className="section-header">
-				<div>
-					<p className="label">{title}</p>
-					<h3>{hint}</h3>
-					<p className="editor-description">{description}</p>
-				</div>
-				<label className="button button--secondary">
-					<input type="file" accept=".xml,text/xml,application/xml" onChange={onFilePick} />
-					Upload XML
-				</label>
-			</div>
-			<textarea
-				spellCheck="false"
-				value={value}
-				onChange={(event) => onChange(event.target.value)}
-			/>
-			<div className="editor-footer">
-				<span>{value.split("\n").length} lines</span>
-				<span>XML source</span>
-			</div>
-		</section>
 	);
 }
 
@@ -562,6 +483,10 @@ function App() {
 	const [page, setPage] = useState(1);
 	const [lastQuery, setLastQuery] = useState(null);
 	const [setupTab, setSetupTab] = useState("query");
+	const [savedViewsXml, setSavedViewsXml] = useState("");
+	const [saving, setSaving] = useState(false);
+	const [materializing, setMaterializing] = useState("");
+	const [savingSchema, setSavingSchema] = useState(false);
 
 	useEffect(() => {
 		void loadBootstrap();
@@ -570,6 +495,10 @@ function App() {
 	const activeView = useMemo(() => {
 		return summary?.views.find((view) => view.name === selectedView) ?? null;
 	}, [selectedView, summary]);
+	const entityLink = useMemo(
+		() => orderRelationships(activeView?.baseEntities ?? [], summary?.relationships),
+		[activeView, summary],
+	);
 
 	const parameterSignature = (activeView?.parameters ?? [])
 		.map((param) => `${param.name}:${param.type}:${param.default ?? ""}`)
@@ -623,6 +552,9 @@ function App() {
 	}, [selectedView, shapeSignature]);
 
 	async function loadBootstrap() {
+		if (viewsXml && viewsXml !== savedViewsXml && !window.confirm("Discard view changes that are not saved to views.xml?")) {
+			return;
+		}
 		setBootstrapping(true);
 		setError("");
 
@@ -636,6 +568,7 @@ function App() {
 
 			setMetaschemaXml(payload.metaschemaXml);
 			setViewsXml(payload.viewsXml);
+			setSavedViewsXml(payload.viewsXml);
 			setSummary(payload.summary);
 			setDataSources(payload.dataSources);
 			setSelectedView(payload.summary.viewNames[0] ?? "");
@@ -647,7 +580,7 @@ function App() {
 		}
 	}
 
-	async function inspectDefinitions() {
+	async function inspectDefinitions(nextViewsXml = viewsXml, preferredView = "") {
 		setParsing(true);
 		setError("");
 
@@ -659,7 +592,7 @@ function App() {
 				},
 				body: JSON.stringify({
 					metaschemaXml,
-					viewsXml,
+					viewsXml: nextViewsXml,
 				}),
 			});
 			const payload = await response.json();
@@ -668,19 +601,139 @@ function App() {
 				throw new Error(formatApiError(payload));
 			}
 
+			setViewsXml(nextViewsXml);
 			setSummary(payload);
 			setSelectedView((current) => {
-				if (payload.viewNames.includes(current)) {
-					return current;
+				if (preferredView && payload.viewNames.includes(preferredView)) {
+					return preferredView;
 				}
-
-				return payload.viewNames[0] ?? "";
+				return payload.viewNames.includes(current) ? current : (payload.viewNames[0] ?? "");
 			});
 			setResult(null);
+			return "";
+		} catch (err) {
+			return err.message;
+		} finally {
+			setParsing(false);
+		}
+	}
+
+	async function saveViewsFile() {
+		setSaving(true);
+		setError("");
+
+		try {
+			const response = await fetch("/api/save-views", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ metaschemaXml, viewsXml }),
+			});
+			const payload = await response.json();
+
+			if (!response.ok) {
+				throw new Error(formatApiError(payload));
+			}
+
+			setSummary(payload);
+			setSavedViewsXml(viewsXml);
 		} catch (err) {
 			setError(err.message);
 		} finally {
-			setParsing(false);
+			setSaving(false);
+		}
+	}
+
+	async function saveMetaschema(nextMetaschemaXml) {
+		setSavingSchema(true);
+		setError("");
+		try {
+			const response = await fetch("/api/save-metaschema", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ metaschemaXml: nextMetaschemaXml, viewsXml }),
+			});
+			const payload = await response.json();
+			if (!response.ok) {
+				throw new Error(formatApiError(payload));
+			}
+			setMetaschemaXml(nextMetaschemaXml);
+			setSummary(payload);
+			return "";
+		} catch (err) {
+			return err.message;
+		} finally {
+			setSavingSchema(false);
+		}
+	}
+
+	async function testConnection(databaseId) {
+		try {
+			const response = await fetch("/api/test-connection", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ metaschemaXml, databaseId }),
+			});
+			const payload = await response.json();
+			if (!response.ok) {
+				return { ok: false, message: formatApiError(payload) };
+			}
+			return payload;
+		} catch (err) {
+			return { ok: false, message: err.message };
+		}
+	}
+
+	async function postMaterialize(path, body) {
+		const response = await fetch(path, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ metaschemaXml, viewsXml, ...body }),
+		});
+		const payload = await response.json();
+		if (!response.ok) {
+			throw new Error(formatApiError(payload));
+		}
+		setMetaschemaXml(payload.metaschemaXml);
+		setSummary(payload.summary);
+	}
+
+	async function materializeView(viewName) {
+		setMaterializing(viewName);
+		setError("");
+		try {
+			await postMaterialize("/api/materialize", {
+				viewName,
+				parameters: viewName === selectedView ? parameterValues : {},
+			});
+		} catch (err) {
+			setError(err.message);
+		} finally {
+			setMaterializing("");
+		}
+	}
+
+	async function dropMaterialized(entityName) {
+		if (!window.confirm(`Remove ${formatEntityName(entityName)} and its stored rows?`)) {
+			return false;
+		}
+		setMaterializing(entityName);
+		setError("");
+		try {
+			await postMaterialize("/api/materialize/drop", { entity: entityName });
+			return true;
+		} catch (err) {
+			window.alert(err.message);
+			return false;
+		} finally {
+			setMaterializing("");
 		}
 	}
 
@@ -705,6 +758,14 @@ function App() {
 		const requestedPage = typeof nextPage === "number" ? nextPage : page;
 		if (!selectedView) {
 			setError("Pick a logical view before running the query.");
+			return;
+		}
+		if (!activeView?.baseEntities?.length) {
+			setError("Choose at least one entity.");
+			return;
+		}
+		if (entityLink.missing.length) {
+			setError(`No relationship connects ${entityLink.missing.map(formatEntityName).join(", ")}.`);
 			return;
 		}
 
@@ -804,18 +865,6 @@ function App() {
 		}
 	}
 
-	async function handleXmlUpload(event, setter) {
-		const file = event.target.files?.[0];
-		event.target.value = "";
-
-		if (!file) {
-			return;
-		}
-
-		const text = await file.text();
-		setter(text);
-	}
-
 	const showTable = outputMode === "split" || outputMode === "table";
 	const showJson = outputMode === "split" || outputMode === "json";
 	const selectionSummary = querySummary({
@@ -829,6 +878,101 @@ function App() {
 		sortDirection,
 		pageSize,
 	});
+	const structureBlocked = !activeView?.baseEntities?.length || entityLink.missing.length > 0;
+	const stepShapeText = [
+		groupBy.length ? `group by ${groupBy.map((item) => item.attribute).join(", ")}` : "no grouping",
+		sortKey ? `sort by ${sortLabel(sortKey)} ${sortDirection}` : "unsorted",
+		pageSize ? `${pageSize} rows per page` : "all rows",
+	].join(", ");
+	const stepShape = {
+		groupBy,
+		measures: groupBy.length ? measures : [],
+		having: groupBy.length ? having.filter((item) => item.alias && String(item.value ?? "").trim() !== "") : [],
+		orderBy: buildOrderBy(),
+		limit: pageSize || null,
+		offset: 0,
+	};
+
+	function saveView(nextView, previousName = nextView.name) {
+		setSummary((current) => {
+			if (!current) {
+				return current;
+			}
+			const exists = current.views.some((view) => view.name === previousName);
+			const views = exists
+				? current.views.map((view) => (view.name === previousName ? nextView : view))
+				: [...current.views, nextView];
+			const viewNames = [
+				...current.viewNames.filter((name) => name !== previousName),
+				nextView.name,
+			].sort((left, right) => left.localeCompare(right));
+			return {
+				...current,
+				views,
+				viewNames,
+				counts: { ...current.counts, views: viewNames.length },
+			};
+		});
+		setViewsXml((current) => replaceViewXml(current, nextView, previousName));
+		if (nextView.name !== previousName) {
+			setSelectedView(nextView.name);
+		}
+		setResult(null);
+		setPage(1);
+	}
+
+	function renameView(rawName) {
+		const name = rawName.trim();
+		if (!activeView) {
+			return "";
+		}
+		if (!name) {
+			return "Enter a name for the view.";
+		}
+		if (name !== activeView.name && summary?.viewNames.includes(name)) {
+			return "Another view already uses this name.";
+		}
+		if (name !== activeView.name) {
+			saveView({ ...activeView, name }, activeView.name);
+		}
+		return "";
+	}
+
+	function deleteView() {
+		if (!activeView || !window.confirm(`Delete "${activeView.name}"? Save to views.xml to make it permanent.`)) {
+			return;
+		}
+		const name = activeView.name;
+		const remaining = (summary?.viewNames ?? []).filter((item) => item !== name);
+		setSummary((current) => current && {
+			...current,
+			views: current.views.filter((view) => view.name !== name),
+			viewNames: remaining,
+			counts: { ...current.counts, views: remaining.length },
+		});
+		setViewsXml((current) => removeViewXml(current, name));
+		setSelectedView(remaining[0] ?? "");
+		setResult(null);
+	}
+
+	function applyViewXml(block) {
+		const nextViewsXml = replaceViewBlock(viewsXml, activeView?.name ?? "", block);
+		return inspectDefinitions(nextViewsXml, viewNameFromXml(block));
+	}
+
+	function createView(rawName, entityNames) {
+		const name = rawName.trim();
+		if (!name) {
+			return "Enter a name for the view.";
+		}
+		if (summary?.viewNames.includes(name)) {
+			return "Another view already uses this name.";
+		}
+		saveView(withEntities(emptyView(name), entityNames, summary?.entities, summary?.relationships));
+		setSelectedView(name);
+		return "";
+	}
+
 	const queryPlan = buildSqlPreview({
 		view: activeView,
 		summary,
@@ -850,8 +994,7 @@ function App() {
 						<p className="label">XDM Views</p>
 						<h1>Federated views across relational and XML data.</h1>
 						<p className="hero-text">
-							Define metadata and logical views in XML, inspect how they are interpreted,
-							then query, transform, and export the federated result.
+							See the entities in the schema, build or change a view from them, then run it across the relational and XML sources.
 						</p>
 						<p className="byline">
 							Made by Devanshi Bavaria (MT2025041) and Parag Katoch (MT2025082)
@@ -868,10 +1011,11 @@ function App() {
 
 				<nav className="workflow-strip" aria-label="Project workflow">
 					{[
-						["definitions", "1", "MetaSchema + View XML"],
-						["select", "2", "Choose the query"],
-						["summary", "3", "Summary and SQL"],
-						["results", "4", "Results + export"],
+						["entities", "1", "Entities"],
+						["views", "2", "Views"],
+						["select", "3", "Parameters and shape"],
+						["summary", "4", "Summary and SQL"],
+						["results", "5", "Results + export"],
 					].map(([id, number, label]) => (
 						<button
 							key={id}
@@ -886,52 +1030,56 @@ function App() {
 				</nav>
 
 				<main className="layout">
-					<section className="panel" id="definitions">
-						<div className="section-header">
-							<div>
-								<p className="label">Step 1 · Definitions</p>
-								<h2>Define the sources and logical views</h2>
-								<p className="section-description">
-									These XML documents are the project inputs. Edit them directly or upload replacements.
-								</p>
-							</div>
-							<div className="button-row">
-								<button className="button button--secondary" onClick={loadBootstrap}>
-									Reload bundled XML
-								</button>
-								<button className="button" onClick={inspectDefinitions} disabled={parsing}>
-									{parsing ? "Refreshing..." : "Refresh view list"}
-								</button>
-							</div>
-						</div>
+					<SchemaSection
+						summary={summary}
+						metaschemaXml={metaschemaXml}
+						saving={savingSchema}
+						onReload={loadBootstrap}
+						onSaveMetaschema={saveMetaschema}
+						onTestConnection={testConnection}
+						materializing={materializing}
+						onRefreshMaterialized={materializeView}
+						onDropMaterialized={dropMaterialized}
+					/>
 
-						<div className="editor-grid">
-							<EditorPanel
-								title="Metaschema"
-								hint="Physical and logical schema"
-								description="Databases, entities, attributes, paths, keys, and relationships."
-								value={metaschemaXml}
-								onChange={setMetaschemaXml}
-								onFilePick={(event) => handleXmlUpload(event, setMetaschemaXml)}
-							/>
-							<EditorPanel
-								title="Views"
-								hint="Federated view definitions"
-								description="Projection, filters, parameters, joins, aggregation, sorting, and pagination."
-								value={viewsXml}
-								onChange={setViewsXml}
-								onFilePick={(event) => handleXmlUpload(event, setViewsXml)}
-							/>
-						</div>
-					</section>
+					<ViewsSection
+						summary={summary}
+						activeView={activeView}
+						viewXml={activeView ? viewToXml(activeView) : ""}
+						viewsXml={viewsXml}
+						dirty={viewsXml !== savedViewsXml}
+						saving={saving}
+						applying={parsing}
+						stepShape={stepShape}
+						stepShapeText={stepShapeText}
+						onSelect={(name) => {
+							setSelectedView(name);
+							setResult(null);
+							setPage(1);
+						}}
+						onCreate={createView}
+						onRename={renameView}
+						onDelete={deleteView}
+						onChange={(view) => saveView(view)}
+						onApplyViewXml={applyViewXml}
+						onApplyAllXml={(xml) => inspectDefinitions(xml)}
+						onSaveFile={saveViewsFile}
+						materializing={materializing}
+						materializeBlocked={
+							structureBlocked
+								? "Add entities and make sure they are connected by joins before storing the result."
+								: ""
+						}
+						onMaterialize={() => materializeView(activeView.name)}
+					/>
 
 					<section className="panel" id="select">
 						<div className="section-header section-header--compact">
 							<div>
-								<p className="label">Step 2 · Choose the query</p>
-								<h2>Select what you want to run</h2>
+								<p className="label">Step 3 · Parameters and shape</p>
+								<h2>Set the values for this run</h2>
 								<p className="section-description">
-									Pick a view, then set its parameters, joins, grouping, and page size. The metadata below shows how that view is defined.
+									Parameter values apply to this run. Grouping, sort, and page size do too.
 								</p>
 							</div>
 						</div>
@@ -959,23 +1107,8 @@ function App() {
 
 						{setupTab === "query" ? (
 						<div className="runner-section">
-							<p className="section-description">Select the logical view, parameters, and relationship behavior.</p>
-						<div className="controls-grid">
-							<label className="field">
-								<span>View</span>
-								<select
-									value={selectedView}
-									onChange={(event) => setSelectedView(event.target.value)}
-								>
-									{summary?.viewNames.length ? null : <option value="">No views available</option>}
-									{(summary?.viewNames ?? []).map((viewName) => (
-										<option key={viewName} value={viewName}>
-											{viewName}
-										</option>
-									))}
-								</select>
-							</label>
-
+							<p className="section-description">Fill in the parameters saved on this view.</p>
+						<div className="controls-grid controls-grid--single">
 							<label className="field">
 								<span>Output</span>
 								<select value={outputMode} onChange={(event) => setOutputMode(event.target.value)}>
@@ -1013,41 +1146,6 @@ function App() {
 							</div>
 						) : null}
 
-						<div className="join-config">
-							<p className="label">Join behavior</p>
-							{(activeView?.relationshipRefs ?? []).length ? (
-								<div className="join-grid">
-									{activeView.relationshipRefs.map((ref, index) => {
-										const selectedType = joinTypes[index] || ref.type || "INNER";
-										return (
-											<label className="field" key={`${ref.name}-${index}`}>
-												<span className="field-label">{ref.name}</span>
-												<span className="field-hint">{joinDescription(selectedType)}</span>
-												<select
-													value={selectedType}
-													onChange={(event) => {
-														const value = event.target.value;
-														setJoinTypes((current) => {
-															const next = [...current];
-															next[index] = value;
-															return next;
-														});
-													}}
-												>
-													{JOIN_OPTIONS.map((option) => (
-														<option key={option.value} value={option.value}>
-															{option.label}{option.value === "FULL" ? " outer" : ""}
-														</option>
-													))}
-												</select>
-											</label>
-										);
-									})}
-								</div>
-							) : (
-								<p className="muted-text">This view has no join to configure.</p>
-							)}
-						</div>
 						</div>
 						) : (
 						<div className="runner-section">
@@ -1339,7 +1437,7 @@ function App() {
 						)}
 
 						<details className="metadata-disclosure">
-						<summary className="label metadata-follow">Interpreted from the XML</summary>
+						<summary className="label metadata-follow">View details</summary>
 
 						<div className="metadata-banner">
 							<div>
@@ -1393,13 +1491,13 @@ function App() {
 					<section className="panel" id="summary">
 						<div className="section-header">
 							<div>
-								<p className="label">Step 3 · Summary and SQL</p>
+								<p className="label">Step 4 · Summary and SQL</p>
 								<h2>Review the query before it runs</h2>
 								<p className="section-description">
 									This is the selection from step 2, written as a short description and as SQL. XML sources are still read with XPath; the logical SQL shows the same view as one statement.
 								</p>
 							</div>
-							<button className="button" onClick={runQuery} disabled={running || bootstrapping || !selectedView}>
+							<button className="button" onClick={runQuery} disabled={running || bootstrapping || !selectedView || structureBlocked}>
 								{running ? "Running..." : "Run query"}
 							</button>
 						</div>
@@ -1424,7 +1522,7 @@ function App() {
 					<section className="panel" id="results">
 						<div className="section-header">
 							<div>
-								<p className="label">Step 4 · Results and export</p>
+								<p className="label">Step 5 · Results and export</p>
 								<h2>Review the federated output</h2>
 							</div>
 							<div className="result-summary">
